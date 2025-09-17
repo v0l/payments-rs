@@ -46,13 +46,10 @@ impl LightningNode for LndNode {
             .await?;
 
         let inner = res.into_inner();
-        Ok(AddInvoiceResponse {
-            parsed_invoice: inner
-                .payment_request
-                .parse()
-                .map_err(|e| anyhow!("Failed to parse payment request: {}", e))?,
-            external_id: None,
-        })
+        Ok(AddInvoiceResponse::from_invoice(
+            &inner.payment_request,
+            None,
+        )?)
     }
 
     async fn cancel_invoice(&self, id: &Vec<u8>) -> Result<()> {

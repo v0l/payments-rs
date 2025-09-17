@@ -1,6 +1,6 @@
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::Stream;
+use futures::{Stream, TryStreamExt};
 use hex::ToHex;
 use lightning_invoice::Bolt11Invoice;
 use std::pin::Pin;
@@ -46,6 +46,16 @@ impl AddInvoiceResponse {
 
     pub fn description_hash(&self) -> String {
         self.parsed_invoice.payment_hash().encode_hex()
+    }
+
+    pub fn from_invoice(pr: &str, external_id: Option<String>) -> Result<AddInvoiceResponse> {
+        let parsed = pr
+            .parse()
+            .map_err(|e| anyhow!("Failed to parse invoice {}", e))?;
+        Ok(Self {
+            parsed_invoice: parsed,
+            external_id,
+        })
     }
 }
 

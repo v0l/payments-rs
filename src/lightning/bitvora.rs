@@ -51,14 +51,7 @@ impl LightningNode for BitvoraNode {
                 rsp.message.unwrap_or_default()
             );
         }
-        Ok(AddInvoiceResponse {
-            parsed_invoice: rsp
-                .data
-                .payment_request
-                .parse()
-                .map_err(|e| anyhow!("Failed to parse payment request: {}", e))?,
-            external_id: Some(rsp.data.id),
-        })
+        Ok(AddInvoiceResponse::from_invoice(&rsp.data.payment_request, Some(rsp.data.id))?)
     }
 
     async fn cancel_invoice(&self, _id: &Vec<u8>) -> anyhow::Result<()> {
