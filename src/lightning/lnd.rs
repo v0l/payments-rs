@@ -1,5 +1,5 @@
-use crate::lightning::{AddInvoiceRequest, AddInvoiceResult, InvoiceUpdate, LightningNode};
-use anyhow::Result;
+use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
@@ -33,7 +33,7 @@ impl LndNode {
 
 #[async_trait]
 impl LightningNode for LndNode {
-    async fn add_invoice(&self, req: AddInvoiceRequest) -> Result<AddInvoiceResult> {
+    async fn add_invoice(&self, req: AddInvoiceRequest) -> Result<AddInvoiceResponse> {
         let mut client = self.client.clone();
         let ln = client.lightning();
         let res = ln
@@ -46,9 +46,11 @@ impl LightningNode for LndNode {
             .await?;
 
         let inner = res.into_inner();
-        Ok(AddInvoiceResult {
-            pr: inner.payment_request,
-            payment_hash: hex::encode(inner.r_hash),
+        Ok(AddInvoiceResponse {
+            parsed_invoice: inner
+                .payment_request
+                .parse()
+                .map_err(|e| anyhow!("Failed to parse payment request: {}", e))?,
             external_id: None,
         })
     }

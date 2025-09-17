@@ -1,5 +1,5 @@
 use crate::json_api::JsonApi;
-use crate::lightning::{AddInvoiceRequest, AddInvoiceResult, InvoiceUpdate, LightningNode};
+use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
 use crate::webhook::{WEBHOOK_BRIDGE, WebhookMessage};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -33,7 +33,7 @@ impl BitvoraNode {
 
 #[async_trait]
 impl LightningNode for BitvoraNode {
-    async fn add_invoice(&self, req: AddInvoiceRequest) -> anyhow::Result<AddInvoiceResult> {
+    async fn add_invoice(&self, req: AddInvoiceRequest) -> anyhow::Result<AddInvoiceResponse> {
         let req = CreateInvoiceRequest {
             amount: req.amount / 1000,
             currency: "sats".to_string(),
@@ -51,9 +51,12 @@ impl LightningNode for BitvoraNode {
                 rsp.message.unwrap_or_default()
             );
         }
-        Ok(AddInvoiceResult {
-            pr: rsp.data.payment_request,
-            payment_hash: rsp.data.r_hash,
+        Ok(AddInvoiceResponse {
+            parsed_invoice: rsp
+                .data
+                .payment_request
+                .parse()
+                .map_err(|e| anyhow!("Failed to parse payment request: {}", e))?,
             external_id: Some(rsp.data.id),
         })
     }
