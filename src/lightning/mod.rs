@@ -44,7 +44,7 @@ impl AddInvoiceResponse {
         self.parsed_invoice.to_string()
     }
 
-    pub fn description_hash(&self) -> String {
+    pub fn payment_hash(&self) -> String {
         self.parsed_invoice.payment_hash().encode_hex()
     }
 
