@@ -1,0 +1,34 @@
+[package]
+name = "payments-rs"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["method-lnd", "method-bitvora", "method-revolut", "rocket"]
+method-lnd = ["lightning", "dep:voltage-tonic-lnd", "dep:hex"]
+method-bitvora = ["lightning", "json-api", "webhook", "dep:hmac", "dep:sha2", "dep:tokio-stream"]
+method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
+
+json-api = ["dep:serde", "dep:serde_json", "dep:reqwest"]
+webhook = ["dep:tokio", "tokio/sync", "tokio-stream/sync"]
+rocket = ["dep:rocket"]
+lightning = []
+fiat = []
+
+[dependencies]
+anyhow = "1.0.99"
+async-trait = "0.1.89"
+futures = "0.3.31"
+log = "0.4.28"
+
+tokio = { version = "1.47.1", default-features = false, optional = true }
+tokio-stream = { version = "0.1.17", optional = true }
+rocket = { version = "0.5.1", optional = true, default-features = false }
+voltage-tonic-lnd = { version = "0.2.0", default-features = false, features = ["lightningrpc", "invoicesrpc", "tls-native-roots"], optional = true }
+reqwest = { version = "0.12.23", optional = true }
+serde = { version = "1.0.225", optional = true }
+serde_json = { version = "1.0.145", optional = true }
+hex = { version = "0.4.3", optional = true }
+hmac = { version = "0.12.1", optional = true }
+sha2 = { version = "0.10.9", optional = true }
+chrono = { version = "0.4.42", optional = true, features = ["serde"] }
