@@ -41,10 +41,20 @@ pub struct AddInvoiceResult {
 #[derive(Debug, Clone)]
 pub enum InvoiceUpdate {
     /// Internal impl created an update which we don't support or care about
-    Unknown,
+    Unknown {
+        payment_hash: String,
+    },
     Error(String),
+    Created {
+        payment_hash: String,
+        payment_request: String,
+    },
+    Canceled {
+        payment_hash: String,
+    },
     Settled {
-        payment_hash: Option<String>,
+        payment_hash: String,
+        preimage: Option<String>,
         external_id: Option<String>,
     },
 }

@@ -96,13 +96,22 @@ impl LightningNode for LndNode {
         let stream = stream.into_inner();
         Ok(Box::pin(stream.map(|i| match i {
             Ok(m) => {
-                if m.state == InvoiceState::Settled as i32 {
-                    InvoiceUpdate::Settled {
-                        payment_hash: Some(hex::encode(m.r_hash)),
+                const SETTLED: i32 = InvoiceState::Settled as i32;
+                const CREATED: i32 = InvoiceState::Open as i32;
+                const CANCELED: i32 = InvoiceState::Canceled as i32;
+                let payment_hash = hex::encode(m.r_hash);
+                match m.state {
+                    SETTLED => InvoiceUpdate::Settled {
+                        payment_hash,
+                        preimage: Some(hex::encode(m.r_preimage)),
                         external_id: None,
-                    }
-                } else {
-                    InvoiceUpdate::Unknown
+                    },
+                    CREATED => InvoiceUpdate::Created {
+                        payment_hash,
+                        payment_request: m.payment_request,
+                    },
+                    CANCELED => InvoiceUpdate::Canceled { payment_hash },
+                    _ => InvoiceUpdate::Unknown { payment_hash },
                 }
             }
             Err(e) => InvoiceUpdate::Error(e.to_string()),

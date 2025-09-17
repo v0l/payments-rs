@@ -6,7 +6,7 @@ edition = "2024"
 [features]
 default = ["method-lnd", "method-bitvora", "method-revolut", "rocket"]
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex"]
-method-bitvora = ["lightning", "json-api", "webhook", "dep:hmac", "dep:sha2", "dep:tokio-stream"]
+method-bitvora = ["lightning", "json-api", "webhook", "dep:hmac", "dep:sha2", "dep:tokio-stream", "dep:lightning-invoice"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
 
 json-api = ["dep:serde", "dep:serde_json", "dep:reqwest"]
@@ -32,3 +32,4 @@ hex = { version = "0.4.3", optional = true }
 hmac = { version = "0.12.1", optional = true }
 sha2 = { version = "0.10.9", optional = true }
 chrono = { version = "0.4.42", optional = true, features = ["serde"] }
+lightning-invoice = { version = "0.33.2", optional = true }

@@ -1,27 +1,32 @@
 use crate::json_api::JsonApi;
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResult, InvoiceUpdate, LightningNode};
+use crate::webhook::{WEBHOOK_BRIDGE, WebhookMessage};
 use anyhow::{anyhow, bail};
+use async_trait::async_trait;
 use futures::{Stream, StreamExt};
+use hex::ToHex;
 use hmac::{Hmac, Mac};
+use lightning_invoice::Bolt11Invoice;
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::pin::Pin;
-use async_trait::async_trait;
 use tokio_stream::wrappers::BroadcastStream;
-use crate::webhook::{WebhookMessage, WEBHOOK_BRIDGE};
 
 #[derive(Clone)]
 pub struct BitvoraNode {
     api: JsonApi,
     webhook_secret: String,
+    /// Path used in the request for webhook matching
+    webhook_path: String,
 }
 
 impl BitvoraNode {
-    pub fn new(api_token: &str, webhook_secret: &str) -> Self {
+    pub fn new(api_token: &str, webhook_secret: &str, webhook_path: &str) -> Self {
         let auth = format!("Bearer {}", api_token);
         Self {
             api: JsonApi::token("https://api.bitvora.com/", &auth, false).unwrap(),
             webhook_secret: webhook_secret.to_string(),
+            webhook_path: webhook_path.to_string(),
         }
     }
 }
@@ -63,40 +68,50 @@ impl LightningNode for BitvoraNode {
     ) -> anyhow::Result<Pin<Box<dyn Stream<Item = InvoiceUpdate> + Send>>> {
         let rx = BroadcastStream::new(WEBHOOK_BRIDGE.listen());
         let secret = self.webhook_secret.clone();
-        let mapped = rx.then(move |r| {
+        let webhook_path = self.webhook_path.clone();
+        let mapped = rx.filter_map(move |r| {
             let secret = secret.clone();
+            let webhook_path = webhook_path.clone();
             async move {
                 match r {
                     Ok(r) => {
-                        if r.endpoint != "/api/v1/webhook/bitvora" {
-                            return InvoiceUpdate::Unknown;
+                        if r.endpoint != webhook_path {
+                            // not being handled here, could be some other webhook event
+                            return None;
                         }
                         let r_body = r.body.as_slice();
                         info!("Received webhook {}", String::from_utf8_lossy(r_body));
                         let body: BitvoraWebhook = match serde_json::from_slice(r_body) {
                             Ok(b) => b,
-                            Err(e) => return InvoiceUpdate::Error(e.to_string()),
+                            Err(e) => return Some(InvoiceUpdate::Error(e.to_string())),
                         };
 
                         if let Err(e) = verify_webhook(&secret, &r) {
-                            return InvoiceUpdate::Error(e.to_string());
+                            return Some(InvoiceUpdate::Error(e.to_string()));
                         }
 
-                        match body.event {
+                        Some(match body.event {
                             BitvoraWebhookEvent::DepositLightningComplete => {
-                                InvoiceUpdate::Settled {
-                                    payment_hash: None,
-                                    external_id: Some(body.data.lightning_invoice_id),
+                                match body.data.recipient.parse::<Bolt11Invoice>() {
+                                    Ok(invoice) => InvoiceUpdate::Settled {
+                                        payment_hash: invoice.payment_hash().encode_hex(),
+                                        preimage: None,
+                                        external_id: Some(body.data.lightning_invoice_id),
+                                    },
+                                    Err(e) => InvoiceUpdate::Error(format!(
+                                        "Failed to parse invoice: {}",
+                                        e
+                                    )),
                                 }
                             }
                             BitvoraWebhookEvent::DepositLightningFailed => {
                                 InvoiceUpdate::Error("Payment failed".to_string())
                             }
-                        }
+                        })
                     }
                     Err(e) => {
                         warn!("Error handling webhook: {}", e);
-                        InvoiceUpdate::Error(e.to_string())
+                        Some(InvoiceUpdate::Error(e.to_string()))
                     }
                 }
             }
@@ -145,6 +160,8 @@ enum BitvoraWebhookEvent {
 struct BitvoraPayment {
     pub id: String,
     pub lightning_invoice_id: String,
+    // the payment request
+    pub recipient: String,
 }
 
 type HmacSha256 = Hmac<sha2::Sha256>;
