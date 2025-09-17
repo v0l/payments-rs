@@ -10,6 +10,7 @@ use async_trait::async_trait;
 use tokio_stream::wrappers::BroadcastStream;
 use crate::webhook::{WebhookMessage, WEBHOOK_BRIDGE};
 
+#[derive(Clone)]
 pub struct BitvoraNode {
     api: JsonApi,
     webhook_secret: String,

@@ -10,6 +10,7 @@ use futures::{Stream, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
 
+#[derive(Clone)]
 pub struct LndNode {
     client: Client,
 }
