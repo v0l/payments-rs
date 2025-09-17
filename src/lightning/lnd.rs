@@ -1,14 +1,14 @@
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResult, InvoiceUpdate, LightningNode};
 use anyhow::Result;
 use async_trait::async_trait;
+use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
+use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
+use fedimint_tonic_lnd::lnrpc::invoice::InvoiceState;
+use fedimint_tonic_lnd::lnrpc::{Invoice, InvoiceSubscription};
+use fedimint_tonic_lnd::{Client, connect};
 use futures::{Stream, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
-use voltage_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
-use voltage_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
-use voltage_tonic_lnd::lnrpc::invoice::InvoiceState;
-use voltage_tonic_lnd::lnrpc::{Invoice, InvoiceSubscription};
-use voltage_tonic_lnd::{Client, ClientBuilder};
 
 pub struct LndNode {
     client: Client,
@@ -16,13 +16,17 @@ pub struct LndNode {
 
 impl LndNode {
     pub async fn new(url: &str, cert: &Path, macaroon: &Path) -> Result<Self> {
-        let lnd = ClientBuilder::new()
-            .address(url)
-            .cert_path(cert)
-            .macaroon_path(macaroon)
-            .build()
-            .await?;
+        let lnd = connect(
+            url.to_string(),
+            cert.to_str().unwrap(),
+            macaroon.to_str().unwrap(),
+        )
+        .await?;
         Ok(Self { client: lnd })
+    }
+
+    pub fn client(&self) -> Client {
+        self.client.clone()
     }
 }
 

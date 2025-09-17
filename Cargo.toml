@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["method-lnd", "method-bitvora", "method-revolut", "rocket"]
-method-lnd = ["lightning", "dep:voltage-tonic-lnd", "dep:hex"]
+method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex"]
 method-bitvora = ["lightning", "json-api", "webhook", "dep:hmac", "dep:sha2", "dep:tokio-stream"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
 
@@ -24,7 +24,7 @@ log = "0.4.28"
 tokio = { version = "1.47.1", default-features = false, optional = true }
 tokio-stream = { version = "0.1.17", optional = true }
 rocket = { version = "0.5.1", optional = true, default-features = false }
-voltage-tonic-lnd = { version = "0.2.0", default-features = false, features = ["lightningrpc", "invoicesrpc", "tls-native-roots"], optional = true }
+fedimint-tonic-lnd = { version = "0.3.0", default-features = false, features = ["lightningrpc", "invoicesrpc"], optional = true }
 reqwest = { version = "0.12.23", optional = true }
 serde = { version = "1.0.225", optional = true }
 serde_json = { version = "1.0.145", optional = true }
