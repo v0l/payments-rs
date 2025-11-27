@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
-use futures::{Stream, TryStreamExt};
+use futures::Stream;
 use hex::ToHex;
 use lightning_invoice::Bolt11Invoice;
 use std::pin::Pin;
