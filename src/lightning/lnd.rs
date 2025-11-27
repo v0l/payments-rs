@@ -1,5 +1,5 @@
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
-use anyhow::{Result, anyhow};
+use anyhow::Result;
 use async_trait::async_trait;
 use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
