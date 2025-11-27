@@ -1,5 +1,5 @@
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
@@ -22,7 +22,9 @@ impl LndNode {
             cert.to_str().unwrap(),
             macaroon.to_str().unwrap(),
         )
-        .await?;
+        .await
+        .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
+
         Ok(Self { client: lnd })
     }
 
