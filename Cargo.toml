@@ -1,6 +1,6 @@
 [package]
 name = "payments-rs"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 
 [features]
@@ -26,7 +26,7 @@ log = "0.4"
 tokio = { version = "1", default-features = false, optional = true }
 tokio-stream = { version = "0.1", optional = true }
 rocket = { version = "0.5", optional = true, default-features = false }
-fedimint-tonic-lnd = { git = "https://github.com/v0l/tonic_lnd.git", rev = "ac385f04f50060452b979913332f12ea96fb412a", default-features = false, features = ["lightningrpc", "invoicesrpc"], optional = true }
+fedimint-tonic-lnd = { git = "https://github.com/v0l/tonic_lnd.git", rev = "34751076c5797eb5b48b59d048ab3fa74e0410aa", default-features = false, features = ["lightningrpc", "invoicesrpc"], optional = true }
 reqwest = { version = "0.12", optional = true }
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }

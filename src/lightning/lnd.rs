@@ -23,7 +23,7 @@ impl LndNode {
             macaroon.to_str().unwrap(),
         )
         .await
-        .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
+        .map_err(|e| anyhow!("Failed to connect to LND: {}", e.to_string()))?;
 
         Ok(Self { client: lnd })
     }
