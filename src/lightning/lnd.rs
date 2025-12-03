@@ -10,6 +10,8 @@ use futures::{Stream, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
 
+pub use fedimint_tonic_lnd::setup_crypto_provider;
+
 #[derive(Clone)]
 pub struct LndNode {
     client: Client,

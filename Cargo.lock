@@ -420,7 +420,7 @@ checksum = "37909eebbb50d72f9059c3b6d82c0463f2ff062c9e95845c43a6c9c0355411be"
 [[package]]
 name = "fedimint-tonic-lnd"
 version = "0.2.0"
-source = "git+https://github.com/v0l/tonic_lnd.git?rev=34751076c5797eb5b48b59d048ab3fa74e0410aa#34751076c5797eb5b48b59d048ab3fa74e0410aa"
+source = "git+https://github.com/v0l/tonic_lnd.git?rev=57fcd1ac2e8834c6f93cfa3c84ba67420a9dd3ed#57fcd1ac2e8834c6f93cfa3c84ba67420a9dd3ed"
 dependencies = [
  "hex",
  "hyper-rustls",
