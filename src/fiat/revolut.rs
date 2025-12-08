@@ -63,7 +63,7 @@ impl RevolutApi {
         })
     }
 
-    pub async fn list_webhooks(&self) -> Result<Vec<RevolutWebhook>> {
+    pub async fn list_webhooks(&self) -> Result<Vec<RevolutWebhookBody>> {
         self.api.get("/api/1.0/webhooks").await
     }
 
@@ -82,7 +82,7 @@ impl RevolutApi {
         &self,
         url: &str,
         events: Vec<RevolutWebhookEvent>,
-    ) -> Result<RevolutWebhook> {
+    ) -> Result<RevolutWebhookBody> {
         self.api
             .post(
                 "/api/1.0/webhooks",
@@ -301,13 +301,21 @@ pub enum RevolutPaymentState {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct RevolutWebhook {
+    pub id: String,
+    pub url: String,
+    pub events: Vec<RevolutWebhookEvent>,
+    pub signing_secret: Option<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct RevolutWebhookBody {
     pub event: RevolutWebhookEvent,
     pub order_id: String,
     pub merchant_order_ext_ref: Option<String>,
 }
 
 type HmacSha256 = Hmac<sha2::Sha256>;
-impl RevolutWebhook {
+impl RevolutWebhookBody {
     pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<Self> {
         let sig = msg
             .headers
@@ -334,7 +342,7 @@ impl RevolutWebhook {
             let result = mac.finalize().into_bytes();
 
             if hex::encode(result) == code {
-                let inner: RevolutWebhook = serde_json::from_slice(&msg.body)?;
+                let inner: RevolutWebhookBody = serde_json::from_slice(&msg.body)?;
                 return Ok(inner);
             } else {
                 warn!(
