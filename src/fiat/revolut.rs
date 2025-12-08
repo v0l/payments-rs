@@ -309,7 +309,7 @@ pub struct RevolutWebhook {
 
 type HmacSha256 = Hmac<sha2::Sha256>;
 impl RevolutWebhook {
-    pub fn from_webhook_message(secret: &str, msg: &WebhookMessage) -> Result<()> {
+    pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<()> {
         let sig = msg
             .headers
             .get("revolut-signature")
