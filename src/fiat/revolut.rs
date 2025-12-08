@@ -1,8 +1,11 @@
 use crate::currency::{Currency, CurrencyAmount};
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService};
 use crate::json_api::{JsonApi, TokenGen};
-use anyhow::{Result, bail};
+use crate::webhook::WebhookMessage;
+use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
+use hmac::{Hmac, Mac};
+use log::warn;
 use reqwest::header::AUTHORIZATION;
 use reqwest::{Method, RequestBuilder, Url};
 use serde::{Deserialize, Serialize};
@@ -302,6 +305,48 @@ pub struct RevolutWebhook {
     pub url: String,
     pub events: Vec<RevolutWebhookEvent>,
     pub signing_secret: Option<String>,
+}
+
+type HmacSha256 = Hmac<sha2::Sha256>;
+impl RevolutWebhook {
+    pub fn from_webhook_message(secret: &str, msg: &WebhookMessage) -> Result<()> {
+        let sig = msg
+            .headers
+            .get("revolut-signature")
+            .ok_or_else(|| anyhow!("Missing Revolut-Signature header"))?;
+        let timestamp = msg
+            .headers
+            .get("revolut-request-timestamp")
+            .ok_or_else(|| anyhow!("Missing Revolut-Request-Timestamp header"))?;
+
+        // check if any signatures match
+        for sig in sig.split(",") {
+            let mut sig_split = sig.split("=");
+            let (version, code) = (
+                sig_split.next().context("Invalid signature format")?,
+                sig_split.next().context("Invalid signature format")?,
+            );
+            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
+            mac.update(version.as_bytes());
+            mac.update(b".");
+            mac.update(timestamp.as_bytes());
+            mac.update(b".");
+            mac.update(msg.body.as_slice());
+            let result = mac.finalize().into_bytes();
+
+            if hex::encode(result) == code {
+                return Ok(());
+            } else {
+                warn!(
+                    "Invalid signature found {} != {}",
+                    code,
+                    hex::encode(result)
+                );
+            }
+        }
+
+        bail!("No valid signature found!");
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
