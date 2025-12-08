@@ -1,10 +1,9 @@
 use anyhow::{Result, ensure};
-use serde::{Deserialize, Serialize};
 use std::fmt::{Display, Formatter};
 use std::ops::Sub;
 use std::str::FromStr;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Currency {
     EUR,
     BTC,
@@ -49,7 +48,7 @@ impl FromStr for Currency {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurrencyAmount(Currency, u64);
 
 impl CurrencyAmount {
