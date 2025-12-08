@@ -4,7 +4,7 @@ version = "0.2.0"
 edition = "2024"
 
 [features]
-default = ["method-lnd", "method-bitvora", "method-revolut", "rocket"]
+default = ["method-lnd", "method-bitvora", "method-revolut"]
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex"]
 method-bitvora = ["lightning", "json-api", "webhook", "dep:hmac", "dep:sha2", "dep:tokio-stream", "dep:lightning-invoice"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
