@@ -63,7 +63,7 @@ impl RevolutApi {
         })
     }
 
-    pub async fn list_webhooks(&self) -> Result<Vec<RevolutWebhookBody>> {
+    pub async fn list_webhooks(&self) -> Result<Vec<RevolutWebhook>> {
         self.api.get("/api/1.0/webhooks").await
     }
 
@@ -82,7 +82,7 @@ impl RevolutApi {
         &self,
         url: &str,
         events: Vec<RevolutWebhookEvent>,
-    ) -> Result<RevolutWebhookBody> {
+    ) -> Result<RevolutWebhook> {
         self.api
             .post(
                 "/api/1.0/webhooks",
