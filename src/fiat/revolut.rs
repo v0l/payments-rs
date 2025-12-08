@@ -301,10 +301,9 @@ pub enum RevolutPaymentState {
 
 #[derive(Clone, Deserialize, Serialize)]
 pub struct RevolutWebhook {
-    pub id: String,
-    pub url: String,
-    pub events: Vec<RevolutWebhookEvent>,
-    pub signing_secret: Option<String>,
+    pub event: RevolutWebhookEvent,
+    pub order_id: String,
+    pub merchant_order_ext_ref: Option<String>,
 }
 
 type HmacSha256 = Hmac<sha2::Sha256>;
