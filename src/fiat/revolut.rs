@@ -308,7 +308,7 @@ pub struct RevolutWebhook {
 
 type HmacSha256 = Hmac<sha2::Sha256>;
 impl RevolutWebhook {
-    pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<()> {
+    pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<Self> {
         let sig = msg
             .headers
             .get("revolut-signature")
@@ -334,7 +334,8 @@ impl RevolutWebhook {
             let result = mac.finalize().into_bytes();
 
             if hex::encode(result) == code {
-                return Ok(());
+                let inner: RevolutWebhook = serde_json::from_slice(&msg.body)?;
+                return Ok(inner);
             } else {
                 warn!(
                     "Invalid signature found {} != {}",
