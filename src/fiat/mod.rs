@@ -1,7 +1,6 @@
 /// Fiat payment integrations
 use crate::currency::CurrencyAmount;
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -20,8 +19,10 @@ pub trait FiatPaymentService: Send + Sync {
     fn cancel_order(&self, id: &str) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug)]
 pub struct FiatPaymentInfo {
+    /// External Payment ID
     pub external_id: String,
+    /// Raw JSON object
     pub raw_data: String,
 }
