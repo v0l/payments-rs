@@ -1,5 +1,5 @@
 use crate::json_api::JsonApi;
-use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
+use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest, PayInvoiceResponse};
 use crate::webhook::{WEBHOOK_BRIDGE, WebhookMessage};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -56,6 +56,34 @@ impl LightningNode for BitvoraNode {
 
     async fn cancel_invoice(&self, _id: &Vec<u8>) -> anyhow::Result<()> {
         bail!("Not supported yet!")
+    }
+
+    async fn pay_invoice(&self, req: PayInvoiceRequest) -> anyhow::Result<PayInvoiceResponse> {
+        let pay_req = SendPaymentRequest {
+            payment_request: req.invoice.clone(),
+        };
+        let rsp: BitvoraResponse<SendPaymentResponse> = self
+            .api
+            .post("/v1/bitcoin/send/lightning-invoice", pay_req)
+            .await?;
+        if rsp.status >= 400 {
+            bail!(
+                "API error: {} {}",
+                rsp.status,
+                rsp.message.unwrap_or_default()
+            );
+        }
+
+        // Parse the invoice to get the payment hash
+        let parsed_invoice: Bolt11Invoice = req.invoice.parse()
+            .map_err(|e| anyhow!("Failed to parse invoice: {}", e))?;
+        
+        Ok(PayInvoiceResponse {
+            payment_hash: parsed_invoice.payment_hash().encode_hex(),
+            payment_preimage: rsp.data.preimage,
+            amount_msat: rsp.data.amount * 1000, // Convert sats to msats
+            fee_msat: rsp.data.fee.unwrap_or(0) * 1000, // Convert sats to msats
+        })
     }
 
     async fn subscribe_invoices(
@@ -136,6 +164,19 @@ struct CreateInvoiceResponse {
     pub id: String,
     pub r_hash: String,
     pub payment_request: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SendPaymentRequest {
+    pub payment_request: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SendPaymentResponse {
+    pub id: String,
+    pub amount: u64,
+    pub fee: Option<u64>,
+    pub preimage: Option<String>,
 }
 
 #[derive(Deserialize, Debug, Clone)]

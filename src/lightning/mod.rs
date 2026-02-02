@@ -20,6 +20,7 @@ pub use lnd::*;
 pub trait LightningNode: Send + Sync {
     async fn add_invoice(&self, req: AddInvoiceRequest) -> Result<AddInvoiceResponse>;
     async fn cancel_invoice(&self, id: &Vec<u8>) -> Result<()>;
+    async fn pay_invoice(&self, req: PayInvoiceRequest) -> Result<PayInvoiceResponse>;
     async fn subscribe_invoices(
         &self,
         from_payment_hash: Option<Vec<u8>>,
@@ -57,6 +58,20 @@ impl AddInvoiceResponse {
             external_id,
         })
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct PayInvoiceRequest {
+    pub invoice: String,
+    pub timeout_seconds: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PayInvoiceResponse {
+    pub payment_hash: String,
+    pub payment_preimage: Option<String>,
+    pub amount_msat: u64,
+    pub fee_msat: u64,
 }
 
 #[derive(Debug, Clone)]

@@ -1,16 +1,19 @@
-use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode};
+use crate::lightning::{
+    AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest,
+    PayInvoiceResponse,
+};
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use fedimint_tonic_lnd::invoicesrpc::lookup_invoice_msg::InvoiceRef;
 use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
 use fedimint_tonic_lnd::lnrpc::invoice::InvoiceState;
 use fedimint_tonic_lnd::lnrpc::{Invoice, InvoiceSubscription};
+use fedimint_tonic_lnd::routerrpc::SendPaymentRequest;
+pub use fedimint_tonic_lnd::setup_crypto_provider;
 use fedimint_tonic_lnd::{Client, connect};
 use futures::{Stream, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
-
-pub use fedimint_tonic_lnd::setup_crypto_provider;
 
 #[derive(Clone)]
 pub struct LndNode {
@@ -64,6 +67,45 @@ impl LightningNode for LndNode {
         })
         .await?;
         Ok(())
+    }
+
+    async fn pay_invoice(&self, req: PayInvoiceRequest) -> Result<PayInvoiceResponse> {
+        let mut client = self.client.clone();
+        let router = client.router();
+        let mut stream = router
+            .send_payment_v2(SendPaymentRequest {
+                payment_request: req.invoice.clone(),
+                timeout_seconds: req.timeout_seconds.unwrap_or(60) as i32,
+                ..Default::default()
+            })
+            .await?
+            .into_inner();
+
+        // Wait for the final payment result
+        let mut final_result = None;
+        while let Some(update) = stream.message().await? {
+            // LND sends multiple updates, we want the final one
+            final_result = Some(update);
+        }
+
+        let payment = final_result.ok_or_else(|| anyhow!("No payment result received"))?;
+        
+        if payment.status != 2 {
+            // 2 = SUCCEEDED
+            let failure_reason = if !payment.failure_reason().as_str_name().is_empty() {
+                payment.failure_reason().as_str_name()
+            } else {
+                "Unknown failure"
+            };
+            return Err(anyhow!("Payment failed: {}", failure_reason));
+        }
+
+        Ok(PayInvoiceResponse {
+            payment_hash: hex::encode(&payment.payment_hash),
+            payment_preimage: Some(hex::encode(&payment.payment_preimage)),
+            amount_msat: payment.value_msat as u64,
+            fee_msat: payment.fee_msat as u64,
+        })
     }
 
     async fn subscribe_invoices(
