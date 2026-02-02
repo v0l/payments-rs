@@ -1,9 +1,9 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use log::debug;
-use reqwest::header::{HeaderMap, ACCEPT, AUTHORIZATION, CONTENT_TYPE, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT};
 use reqwest::{Client, Method, Request, RequestBuilder, Url};
-use serde::de::DeserializeOwned;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
@@ -111,7 +111,10 @@ impl JsonApi {
         body: Option<impl Serialize>,
     ) -> Result<Request> {
         let url = self.base.join(path)?;
-        let mut req = self.client.request(method.clone(), url.clone());
+        let mut req = self
+            .client
+            .request(method.clone(), url.clone())
+            .header(ACCEPT, "application/json");
         let req = if let Some(body) = body {
             let body = serde_json::to_string(&body)?;
             if let Some(token_gen) = self.token_gen.as_ref() {

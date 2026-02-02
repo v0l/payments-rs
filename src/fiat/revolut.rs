@@ -1,5 +1,5 @@
 use crate::currency::{Currency, CurrencyAmount};
-use crate::fiat::{FiatPaymentInfo, FiatPaymentService};
+use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
 use crate::json_api::{JsonApi, TokenGen};
 use crate::webhook::WebhookMessage;
 use anyhow::{Context, Result, anyhow, bail};
@@ -98,7 +98,45 @@ impl RevolutApi {
         &self,
         amount: CurrencyAmount,
         description: Option<String>,
+        line_items: Option<Vec<LineItem>>,
     ) -> Result<RevolutOrder> {
+        // Convert generic LineItems to Revolut's format
+        let revolut_line_items = line_items.map(|items| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let total = item.total_amount();
+                    
+                    // Build taxes array if tax info is provided
+                    let taxes = if let (Some(tax_amt), Some(tax_name)) = (item.tax_amount, item.tax_name) {
+                        Some(vec![RevolutTax {
+                            name: tax_name,
+                            amount: tax_amt,
+                        }])
+                    } else {
+                        None
+                    };
+                    
+                    RevolutLineItem {
+                        name: item.name,
+                        description: item.description,
+                        item_type: None, // Could be enhanced to detect from metadata
+                        quantity: RevolutQuantity {
+                            value: item.quantity,
+                            unit: None, // Could be enhanced to extract from metadata
+                        },
+                        unit_price_amount: item.unit_amount,
+                        total_amount: total,
+                        external_id: None,
+                        discounts: None,
+                        taxes,
+                        image_urls: item.images,
+                        url: None,
+                    }
+                })
+                .collect()
+        });
+
         self.api
             .post(
                 "/api/orders",
@@ -109,6 +147,7 @@ impl RevolutApi {
                         _ => amount.value(),
                     },
                     description,
+                    line_items: revolut_line_items,
                 },
             )
             .await
@@ -134,11 +173,12 @@ impl FiatPaymentService for RevolutApi {
         &self,
         description: &str,
         amount: CurrencyAmount,
+        line_items: Option<Vec<LineItem>>,
     ) -> Pin<Box<dyn Future<Output = Result<FiatPaymentInfo>> + Send>> {
         let s = self.clone();
         let desc = description.to_string();
         Box::pin(async move {
-            let rsp = s.create_order(amount, Some(desc)).await?;
+            let rsp = s.create_order(amount, Some(desc), line_items).await?;
             Ok(FiatPaymentInfo {
                 raw_data: serde_json::to_string(&rsp)?,
                 external_id: rsp.id,
@@ -163,9 +203,148 @@ pub struct CreateOrderRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_items: Option<Vec<RevolutLineItem>>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RevolutLineItem {
+    pub name: String,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    
+    #[serde(rename = "type")]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item_type: Option<RevolutLineItemType>,
+    
+    pub quantity: RevolutQuantity,
+    
+    pub unit_price_amount: u64,
+    
+    pub total_amount: u64,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub external_id: Option<String>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub discounts: Option<Vec<RevolutDiscount>>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub taxes: Option<Vec<RevolutTax>>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub image_urls: Option<Vec<String>>,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+#[serde(rename_all = "lowercase")]
+pub enum RevolutLineItemType {
+    Physical,
+    Digital,
+    Service,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RevolutQuantity {
+    pub value: u64,
+    
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RevolutDiscount {
+    pub name: String,
+    pub amount: u64,
+}
+
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct RevolutTax {
+    pub name: String,
+    pub amount: u64,
+}
+
+impl RevolutLineItem {
+    /// Create a simple line item with just name, quantity, and pricing
+    pub fn simple(name: String, quantity: u64, unit_price_amount: u64) -> Self {
+        Self {
+            name,
+            description: None,
+            item_type: None,
+            quantity: RevolutQuantity {
+                value: quantity,
+                unit: None,
+            },
+            unit_price_amount,
+            total_amount: quantity * unit_price_amount,
+            external_id: None,
+            discounts: None,
+            taxes: None,
+            image_urls: None,
+            url: None,
+        }
+    }
+
+    /// Builder-style method to set the item type
+    pub fn with_type(mut self, item_type: RevolutLineItemType) -> Self {
+        self.item_type = Some(item_type);
+        self
+    }
+
+    /// Builder-style method to set the description
+    pub fn with_description(mut self, description: String) -> Self {
+        self.description = Some(description);
+        self
+    }
+
+    /// Builder-style method to set the quantity unit
+    pub fn with_unit(mut self, unit: String) -> Self {
+        self.quantity.unit = Some(unit);
+        self
+    }
+
+    /// Builder-style method to add discounts
+    pub fn with_discounts(mut self, discounts: Vec<RevolutDiscount>) -> Self {
+        // Recalculate total with discounts
+        let discount_total: u64 = discounts.iter().map(|d| d.amount).sum();
+        self.total_amount = (self.quantity.value * self.unit_price_amount).saturating_sub(discount_total);
+        self.discounts = Some(discounts);
+        self
+    }
+
+    /// Builder-style method to add taxes
+    pub fn with_taxes(mut self, taxes: Vec<RevolutTax>) -> Self {
+        let tax_total: u64 = taxes.iter().map(|t| t.amount).sum();
+        self.total_amount += tax_total;
+        self.taxes = Some(taxes);
+        self
+    }
+
+    /// Builder-style method to set image URLs
+    pub fn with_images(mut self, image_urls: Vec<String>) -> Self {
+        self.image_urls = Some(image_urls);
+        self
+    }
+
+    /// Builder-style method to set the product URL
+    pub fn with_url(mut self, url: String) -> Self {
+        self.url = Some(url);
+        self
+    }
+
+    /// Builder-style method to set the external ID
+    pub fn with_external_id(mut self, external_id: String) -> Self {
+        self.external_id = Some(external_id);
+        self
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutOrder {
     pub id: String,
     pub token: String,
@@ -180,9 +359,11 @@ pub struct RevolutOrder {
     pub checkout_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payments: Option<Vec<RevolutOrderPayment>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_items: Option<Vec<RevolutLineItem>>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutOrderPayment {
     pub id: String,
     pub state: RevolutPaymentState,
@@ -209,7 +390,7 @@ pub struct RevolutOrderPayment {
     pub risk_level: Option<RevolutRiskLevel>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutPaymentMethod {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
@@ -231,7 +412,7 @@ pub struct RevolutPaymentMethod {
     pub cardholder_name: Option<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevolutPaymentMethodType {
     ApplePay,
@@ -241,14 +422,14 @@ pub enum RevolutPaymentMethodType {
     RevolutPayAccount,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RevolutRiskLevel {
     High,
     Low,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutBillingAddress {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub street_line_1: Option<String>,
@@ -263,7 +444,7 @@ pub struct RevolutBillingAddress {
     pub postcode: String,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum RevolutOrderState {
     Pending,
@@ -299,7 +480,7 @@ pub enum RevolutPaymentState {
     Failed,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutWebhook {
     pub id: String,
     pub url: String,
@@ -307,7 +488,7 @@ pub struct RevolutWebhook {
     pub signing_secret: Option<String>,
 }
 
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct RevolutWebhookBody {
     pub event: RevolutWebhookEvent,
     pub order_id: String,
