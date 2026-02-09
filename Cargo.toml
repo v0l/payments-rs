@@ -8,7 +8,7 @@ default = ["method-lnd", "method-bitvora", "method-revolut", "method-stripe"]
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex"]
 method-bitvora = ["lightning", "json-api", "webhook", "dep:tokio-stream"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
-method-stripe = ["fiat", "webhook", "dep:hex", "dep:serde", "dep:serde_json", "dep:serde_html_form", "dep:reqwest"]
+method-stripe = ["fiat", "webhook", "dep:hex", "dep:serde", "dep:serde_html_form", "dep:reqwest"]
 tls-ring = ["fedimint-tonic-lnd/tls-ring"]
 tls-aws = ["fedimint-tonic-lnd/tls-aws-lc-rs"]
 
@@ -16,7 +16,7 @@ json-api = ["dep:serde", "dep:serde_json", "dep:reqwest"]
 webhook = ["dep:tokio", "tokio/sync", "tokio-stream/sync", "dep:hmac", "dep:sha2"]
 rocket = ["dep:rocket"]
 lightning = ["dep:lightning-invoice"]
-fiat = []
+fiat = ["dep:serde_json"]
 
 [dependencies]
 anyhow = "1"
@@ -41,3 +41,13 @@ lightning-invoice = { version = "0.34", optional = true }
 [dev-dependencies]
 env_logger = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[[example]]
+name = "revolut"
+path = "examples/revolut_example.rs"
+required-features = ["method-revolut"]
+
+[[example]]
+name = "stripe"
+path = "examples/stripe_example.rs"
+required-features = ["method-stripe"]
