@@ -44,8 +44,20 @@ impl Display for Currency {
     }
 }
 
+/// Error returned when parsing an invalid currency string.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseCurrencyError(String);
+
+impl Display for ParseCurrencyError {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(f, "unknown currency: {}", self.0)
+    }
+}
+
+impl std::error::Error for ParseCurrencyError {}
+
 impl FromStr for Currency {
-    type Err = ();
+    type Err = ParseCurrencyError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s.to_lowercase().as_str() {
@@ -57,7 +69,7 @@ impl FromStr for Currency {
             "chf" => Ok(Currency::CHF),
             "aud" => Ok(Currency::AUD),
             "jpy" => Ok(Currency::JPY),
-            _ => Err(()),
+            _ => Err(ParseCurrencyError(s.to_string())),
         }
     }
 }
@@ -173,7 +185,10 @@ mod tests {
         assert_eq!("chf".parse::<Currency>(), Ok(Currency::CHF));
         assert_eq!("aud".parse::<Currency>(), Ok(Currency::AUD));
         assert_eq!("jpy".parse::<Currency>(), Ok(Currency::JPY));
-        assert_eq!("invalid".parse::<Currency>(), Err(()));
+        assert_eq!(
+            "invalid".parse::<Currency>(),
+            Err(ParseCurrencyError("invalid".to_string()))
+        );
     }
 
     #[test]
