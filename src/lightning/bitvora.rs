@@ -1,3 +1,8 @@
+//! Bitvora Lightning payment provider integration.
+//!
+//! This module requires network access to the Bitvora API and cannot be unit tested
+//! without external services. Coverage exclusions are applied accordingly.
+
 use crate::json_api::JsonApi;
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest, PayInvoiceResponse};
 use crate::webhook::{WEBHOOK_BRIDGE, WebhookMessage};
@@ -12,6 +17,9 @@ use serde::{Deserialize, Serialize};
 use std::pin::Pin;
 use tokio_stream::wrappers::BroadcastStream;
 
+/// Bitvora Lightning payment node client.
+///
+/// Provides integration with the Bitvora custodial Lightning API.
 #[derive(Clone)]
 pub struct BitvoraNode {
     api: JsonApi,
@@ -21,6 +29,13 @@ pub struct BitvoraNode {
 }
 
 impl BitvoraNode {
+    /// Create a new Bitvora node client.
+    ///
+    /// # Arguments
+    ///
+    /// * `api_token` - Your Bitvora API token
+    /// * `webhook_secret` - Secret for verifying webhook signatures
+    /// * `webhook_path` - The URL path where webhooks will be received
     pub fn new(api_token: &str, webhook_secret: &str, webhook_path: &str) -> Self {
         let auth = format!("Bearer {}", api_token);
         Self {
@@ -32,6 +47,7 @@ impl BitvoraNode {
 }
 
 #[async_trait]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl LightningNode for BitvoraNode {
     async fn add_invoice(&self, req: AddInvoiceRequest) -> anyhow::Result<AddInvoiceResponse> {
         let req = CreateInvoiceRequest {
@@ -220,4 +236,78 @@ fn verify_webhook(secret: &str, msg: &WebhookMessage) -> anyhow::Result<()> {
     }
 
     bail!("No valid signature found!");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hmac::Mac;
+    use std::collections::HashMap;
+
+    fn create_bitvora_signature(secret: &str, body: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(body);
+        let result = mac.finalize().into_bytes();
+        hex::encode(result)
+    }
+
+    #[test]
+    fn test_bitvora_node_new() {
+        let node = BitvoraNode::new("test_token", "webhook_secret", "/webhooks/bitvora");
+        assert_eq!(node.webhook_secret, "webhook_secret");
+        assert_eq!(node.webhook_path, "/webhooks/bitvora");
+    }
+
+    #[test]
+    fn test_verify_webhook_valid() {
+        let secret = "test_secret";
+        let body = b"test body";
+        let signature = create_bitvora_signature(secret, body);
+
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/bitvora".to_string(),
+            body: body.to_vec(),
+            headers: HashMap::from([("bitvora-signature".to_string(), signature)]),
+        };
+
+        let result = verify_webhook(secret, &msg);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_verify_webhook_missing_signature() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/bitvora".to_string(),
+            body: b"test".to_vec(),
+            headers: HashMap::new(),
+        };
+
+        let result = verify_webhook("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing bitvora-signature"));
+    }
+
+    #[test]
+    fn test_verify_webhook_invalid_signature() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/bitvora".to_string(),
+            body: b"test".to_vec(),
+            headers: HashMap::from([("bitvora-signature".to_string(), "invalid".to_string())]),
+        };
+
+        let result = verify_webhook("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No valid signature found"));
+    }
+
+    #[test]
+    fn test_bitvora_webhook_event_serde() {
+        let json = r#""deposit.lightning.completed""#;
+        let event: BitvoraWebhookEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, BitvoraWebhookEvent::DepositLightningComplete));
+
+        let json = r#""deposit.lightning.failed""#;
+        let event: BitvoraWebhookEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, BitvoraWebhookEvent::DepositLightningFailed));
+    }
 }

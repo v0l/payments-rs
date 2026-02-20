@@ -91,14 +91,17 @@ impl JsonApi {
         &self.base
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T> {
         self.req::<T, ()>(Method::GET, path, None).await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn post<T: DeserializeOwned, R: Serialize>(&self, path: &str, body: R) -> Result<T> {
         self.req(Method::POST, path, Some(body)).await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn put<T: DeserializeOwned, R: Serialize>(&self, path: &str, body: R) -> Result<T> {
         self.req(Method::PUT, path, Some(body)).await
     }
@@ -133,6 +136,7 @@ impl JsonApi {
         Ok(req)
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn req<T: DeserializeOwned, R: Serialize>(
         &self,
         method: Method,
@@ -170,6 +174,7 @@ impl JsonApi {
     }
 
     /// Make a request and only return the status code
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn req_status<R: Serialize>(
         &self,
         method: Method,
@@ -188,5 +193,91 @@ impl JsonApi {
         } else {
             bail!("{} {}: {}: {}", method, path, status, &text);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_json_api_new() {
+        let api = JsonApi::new("https://api.example.com").unwrap();
+        assert_eq!(api.base().as_str(), "https://api.example.com/");
+    }
+
+    #[test]
+    fn test_json_api_new_invalid_url() {
+        let result = JsonApi::new("not a valid url");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_json_api_token() {
+        let api = JsonApi::token("https://api.example.com", "Bearer token123", false).unwrap();
+        assert_eq!(api.base().as_str(), "https://api.example.com/");
+    }
+
+    #[test]
+    fn test_json_api_base() {
+        let api = JsonApi::new("https://api.example.com/v1/").unwrap();
+        assert_eq!(api.base().as_str(), "https://api.example.com/v1/");
+    }
+
+    #[test]
+    fn test_json_api_build_req_get() {
+        let api = JsonApi::new("https://api.example.com").unwrap();
+        let req = api.build_req(Method::GET, "/test", None::<()>).unwrap();
+        assert_eq!(req.method(), Method::GET);
+        assert_eq!(req.url().path(), "/test");
+    }
+
+    #[test]
+    fn test_json_api_build_req_post_with_body() {
+        let api = JsonApi::new("https://api.example.com").unwrap();
+        let body = serde_json::json!({"key": "value"});
+        let req = api.build_req(Method::POST, "/test", Some(body)).unwrap();
+        assert_eq!(req.method(), Method::POST);
+        assert!(req.headers().get(CONTENT_TYPE).is_some());
+    }
+
+    struct TestTokenGen;
+    impl TokenGen for TestTokenGen {
+        fn generate_token(
+            &self,
+            _method: Method,
+            _url: &Url,
+            _body: Option<&str>,
+            req: RequestBuilder,
+        ) -> Result<RequestBuilder> {
+            Ok(req.header("X-Custom-Token", "test123"))
+        }
+    }
+
+    #[test]
+    fn test_json_api_token_gen() {
+        let api = JsonApi::token_gen("https://api.example.com", false, TestTokenGen).unwrap();
+        assert_eq!(api.base().as_str(), "https://api.example.com/");
+    }
+
+    #[test]
+    fn test_json_api_build_req_with_token_gen() {
+        let api = JsonApi::token_gen("https://api.example.com", false, TestTokenGen).unwrap();
+        let req = api.build_req(Method::GET, "/test", None::<()>).unwrap();
+        assert_eq!(
+            req.headers().get("X-Custom-Token").unwrap().to_str().unwrap(),
+            "test123"
+        );
+    }
+
+    #[test]
+    fn test_json_api_build_req_with_token_gen_and_body() {
+        let api = JsonApi::token_gen("https://api.example.com", false, TestTokenGen).unwrap();
+        let body = serde_json::json!({"test": true});
+        let req = api.build_req(Method::POST, "/test", Some(body)).unwrap();
+        assert_eq!(
+            req.headers().get("X-Custom-Token").unwrap().to_str().unwrap(),
+            "test123"
+        );
     }
 }

@@ -657,3 +657,136 @@ impl StripeWebhookEvent {
         Ok(event)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hmac::Mac;
+
+    fn create_stripe_signature(secret: &str, timestamp: &str, body: &[u8]) -> String {
+        let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(body));
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(signed_payload.as_bytes());
+        let result = mac.finalize().into_bytes();
+        format!("t={},v1={}", timestamp, hex::encode(result))
+    }
+
+    #[test]
+    fn test_stripe_webhook_verify_valid() {
+        let secret = "whsec_test_secret";
+        let timestamp = "1234567890";
+        let body = r#"{"id":"evt_123","type":"payment_intent.succeeded","data":{"object":{}}}"#;
+
+        let signature = create_stripe_signature(secret, timestamp, body.as_bytes());
+
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([("stripe-signature".to_string(), signature)]),
+        };
+
+        let result = StripeWebhookEvent::verify(secret, &msg);
+        assert!(result.is_ok());
+        let event = result.unwrap();
+        assert_eq!(event.id, "evt_123");
+        assert_eq!(event.event_type, "payment_intent.succeeded");
+    }
+
+    #[test]
+    fn test_stripe_webhook_verify_missing_signature() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: b"{}".to_vec(),
+            headers: HashMap::new(),
+        };
+
+        let result = StripeWebhookEvent::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing Stripe-Signature"));
+    }
+
+    #[test]
+    fn test_stripe_webhook_verify_invalid_signature() {
+        let body = r#"{"id":"evt_123","type":"test","data":{"object":{}}}"#;
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([(
+                "stripe-signature".to_string(),
+                "t=1234567890,v1=invalid_signature".to_string(),
+            )]),
+        };
+
+        let result = StripeWebhookEvent::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Invalid signature"));
+    }
+
+    #[test]
+    fn test_stripe_webhook_verify_missing_timestamp() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: b"{}".to_vec(),
+            headers: HashMap::from([(
+                "stripe-signature".to_string(),
+                "v1=abc123".to_string(),
+            )]),
+        };
+
+        let result = StripeWebhookEvent::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing timestamp"));
+    }
+
+    #[test]
+    fn test_stripe_config_clone() {
+        let config = StripeConfig {
+            url: Some("https://api.stripe.com".to_string()),
+            api_key: "sk_test_123".to_string(),
+            webhook_secret: Some("whsec_123".to_string()),
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.api_key, "sk_test_123");
+    }
+
+    #[test]
+    fn test_stripe_payment_intent_status_serde() {
+        let status = StripePaymentIntentStatus::Succeeded;
+        let json = serde_json::to_string(&status).unwrap();
+        assert_eq!(json, r#""succeeded""#);
+
+        let parsed: StripePaymentIntentStatus = serde_json::from_str(r#""requires_payment_method""#).unwrap();
+        assert!(matches!(parsed, StripePaymentIntentStatus::RequiresPaymentMethod));
+    }
+
+    #[test]
+    fn test_stripe_checkout_session_list_serde() {
+        let json = r#"{"object":"list","data":[],"has_more":false,"url":"/v1/checkout/sessions"}"#;
+        let list: StripeCheckoutSessionList = serde_json::from_str(json).unwrap();
+        assert_eq!(list.object, "list");
+        assert!(list.data.is_empty());
+        assert!(!list.has_more);
+    }
+
+    #[test]
+    fn test_stripe_api_webhook_secret() {
+        let config = StripeConfig {
+            url: None,
+            api_key: "sk_test_123".to_string(),
+            webhook_secret: Some("whsec_test".to_string()),
+        };
+        let api = StripeApi::new(config).unwrap();
+        assert_eq!(api.webhook_secret(), Some("whsec_test"));
+    }
+
+    #[test]
+    fn test_stripe_api_webhook_secret_none() {
+        let config = StripeConfig {
+            url: None,
+            api_key: "sk_test_123".to_string(),
+            webhook_secret: None,
+        };
+        let api = StripeApi::new(config).unwrap();
+        assert_eq!(api.webhook_secret(), None);
+    }
+}

@@ -115,3 +115,72 @@ impl WebhookBridge {
         self.tx.subscribe()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_webhook_bridge_new() {
+        let bridge = WebhookBridge::new();
+        // Should be able to create without panic
+        let _rx = bridge.listen();
+    }
+
+    #[test]
+    fn test_webhook_bridge_default() {
+        let bridge = WebhookBridge::default();
+        let _rx = bridge.listen();
+    }
+
+    #[test]
+    fn test_webhook_bridge_send_without_listener() {
+        let bridge = WebhookBridge::new();
+        // Should not panic when sending without listeners
+        bridge.send(WebhookMessage {
+            endpoint: "/test".to_string(),
+            body: vec![1, 2, 3],
+            headers: HashMap::new(),
+        });
+    }
+
+    #[tokio::test]
+    async fn test_webhook_bridge_send_and_receive() {
+        let bridge = WebhookBridge::new();
+        let mut rx = bridge.listen();
+
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/test".to_string(),
+            body: b"test body".to_vec(),
+            headers: HashMap::from([("Content-Type".to_string(), "application/json".to_string())]),
+        };
+
+        bridge.send(msg.clone());
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.endpoint, "/webhooks/test");
+        assert_eq!(received.body, b"test body");
+        assert_eq!(
+            received.headers.get("Content-Type"),
+            Some(&"application/json".to_string())
+        );
+    }
+
+    #[test]
+    fn test_webhook_message_clone() {
+        let msg = WebhookMessage {
+            endpoint: "/test".to_string(),
+            body: vec![1, 2, 3],
+            headers: HashMap::new(),
+        };
+        let cloned = msg.clone();
+        assert_eq!(cloned.endpoint, msg.endpoint);
+        assert_eq!(cloned.body, msg.body);
+    }
+
+    #[test]
+    fn test_global_webhook_bridge() {
+        // Test that WEBHOOK_BRIDGE static works
+        let _rx = WEBHOOK_BRIDGE.listen();
+    }
+}

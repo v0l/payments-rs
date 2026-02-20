@@ -8,6 +8,9 @@ repository = "https://github.com/v0l/payments-rs"
 keywords = ["payments", "stripe", "lightning", "bitcoin", "revolut"]
 categories = ["api-bindings", "asynchronous"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
+
 [features]
 default = ["method-lnd", "method-bitvora", "method-revolut", "method-stripe", "tls-ring"]
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]

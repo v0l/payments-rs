@@ -164,3 +164,131 @@ pub enum InvoiceUpdate {
         external_id: Option<String>,
     },
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_add_invoice_request_clone() {
+        let req = AddInvoiceRequest {
+            amount: 1000,
+            memo: Some("Test payment".to_string()),
+            expire: Some(3600),
+        };
+        let cloned = req.clone();
+        assert_eq!(cloned.amount, 1000);
+        assert_eq!(cloned.memo, Some("Test payment".to_string()));
+        assert_eq!(cloned.expire, Some(3600));
+    }
+
+    #[test]
+    fn test_add_invoice_request_debug() {
+        let req = AddInvoiceRequest {
+            amount: 1000,
+            memo: None,
+            expire: None,
+        };
+        let debug_str = format!("{:?}", req);
+        assert!(debug_str.contains("1000"));
+    }
+
+    #[test]
+    fn test_add_invoice_response_from_invoice_invalid() {
+        let result = AddInvoiceResponse::from_invoice("invalid_invoice", None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_pay_invoice_request_clone() {
+        let req = PayInvoiceRequest {
+            invoice: "lnbc...".to_string(),
+            timeout_seconds: Some(60),
+        };
+        let cloned = req.clone();
+        assert_eq!(cloned.invoice, "lnbc...");
+        assert_eq!(cloned.timeout_seconds, Some(60));
+    }
+
+    #[test]
+    fn test_pay_invoice_response_clone() {
+        let resp = PayInvoiceResponse {
+            payment_hash: "abc123".to_string(),
+            payment_preimage: Some("def456".to_string()),
+            amount_msat: 1000,
+            fee_msat: 10,
+        };
+        let cloned = resp.clone();
+        assert_eq!(cloned.payment_hash, "abc123");
+        assert_eq!(cloned.payment_preimage, Some("def456".to_string()));
+        assert_eq!(cloned.amount_msat, 1000);
+        assert_eq!(cloned.fee_msat, 10);
+    }
+
+    #[test]
+    fn test_invoice_update_unknown() {
+        let update = InvoiceUpdate::Unknown {
+            payment_hash: "abc123".to_string(),
+        };
+        let cloned = update.clone();
+        if let InvoiceUpdate::Unknown { payment_hash } = cloned {
+            assert_eq!(payment_hash, "abc123");
+        } else {
+            panic!("Expected Unknown variant");
+        }
+    }
+
+    #[test]
+    fn test_invoice_update_error() {
+        let update = InvoiceUpdate::Error("Connection failed".to_string());
+        let cloned = update.clone();
+        if let InvoiceUpdate::Error(msg) = cloned {
+            assert_eq!(msg, "Connection failed");
+        } else {
+            panic!("Expected Error variant");
+        }
+    }
+
+    #[test]
+    fn test_invoice_update_created() {
+        let update = InvoiceUpdate::Created {
+            payment_hash: "abc123".to_string(),
+            payment_request: "lnbc...".to_string(),
+        };
+        let debug_str = format!("{:?}", update);
+        assert!(debug_str.contains("abc123"));
+    }
+
+    #[test]
+    fn test_invoice_update_canceled() {
+        let update = InvoiceUpdate::Canceled {
+            payment_hash: "abc123".to_string(),
+        };
+        if let InvoiceUpdate::Canceled { payment_hash } = update {
+            assert_eq!(payment_hash, "abc123");
+        } else {
+            panic!("Expected Canceled variant");
+        }
+    }
+
+    #[test]
+    fn test_invoice_update_settled() {
+        let update = InvoiceUpdate::Settled {
+            payment_hash: "abc123".to_string(),
+            preimage: Some("preimage456".to_string()),
+            external_id: Some("ext789".to_string()),
+        };
+        if let InvoiceUpdate::Settled {
+            payment_hash,
+            preimage,
+            external_id,
+        } = update
+        {
+            assert_eq!(payment_hash, "abc123");
+            assert_eq!(preimage, Some("preimage456".to_string()));
+            assert_eq!(external_id, Some("ext789".to_string()));
+        } else {
+            panic!("Expected Settled variant");
+        }
+    }
+}

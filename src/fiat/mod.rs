@@ -118,3 +118,85 @@ pub struct FiatPaymentInfo {
     /// Raw JSON response from the provider
     pub raw_data: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_line_item_total_amount_without_tax() {
+        let item = LineItem {
+            name: "Test Item".to_string(),
+            description: None,
+            unit_amount: 1000,
+            quantity: 2,
+            currency: "USD".to_string(),
+            images: None,
+            metadata: None,
+            tax_amount: None,
+            tax_name: None,
+        };
+        assert_eq!(item.total_amount(), 2000);
+    }
+
+    #[test]
+    fn test_line_item_total_amount_with_tax() {
+        let item = LineItem {
+            name: "Test Item".to_string(),
+            description: Some("A test item".to_string()),
+            unit_amount: 1000,
+            quantity: 2,
+            currency: "USD".to_string(),
+            images: Some(vec!["https://example.com/image.jpg".to_string()]),
+            metadata: None,
+            tax_amount: Some(200),
+            tax_name: Some("VAT".to_string()),
+        };
+        assert_eq!(item.total_amount(), 2200); // 2000 + 200 tax
+    }
+
+    #[test]
+    fn test_line_item_subtotal_amount() {
+        let item = LineItem {
+            name: "Test Item".to_string(),
+            description: None,
+            unit_amount: 1000,
+            quantity: 3,
+            currency: "USD".to_string(),
+            images: None,
+            metadata: None,
+            tax_amount: Some(300),
+            tax_name: Some("Sales Tax".to_string()),
+        };
+        assert_eq!(item.subtotal_amount(), 3000);
+        assert_eq!(item.total_amount(), 3300);
+    }
+
+    #[test]
+    fn test_line_item_clone() {
+        let item = LineItem {
+            name: "Test Item".to_string(),
+            description: Some("Description".to_string()),
+            unit_amount: 500,
+            quantity: 1,
+            currency: "EUR".to_string(),
+            images: None,
+            metadata: Some(serde_json::json!({"key": "value"})),
+            tax_amount: None,
+            tax_name: None,
+        };
+        let cloned = item.clone();
+        assert_eq!(cloned.name, item.name);
+        assert_eq!(cloned.unit_amount, item.unit_amount);
+    }
+
+    #[test]
+    fn test_fiat_payment_info_debug() {
+        let info = FiatPaymentInfo {
+            external_id: "ext_123".to_string(),
+            raw_data: r#"{"id": "123"}"#.to_string(),
+        };
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("ext_123"));
+    }
+}

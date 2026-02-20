@@ -1,4 +1,7 @@
 //! LND (Lightning Network Daemon) integration.
+//!
+//! This module requires a running LND node and cannot be unit tested without one.
+//! Coverage exclusions are applied to async methods that require network access.
 
 use crate::lightning::{
     AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest,
@@ -96,6 +99,7 @@ impl LndNode {
     /// # Note
     ///
     /// You must call [`setup_crypto_provider`] before creating connections.
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn new(url: &str, cert: &Path, macaroon: &Path) -> Result<Self> {
         let lnd = connect(
             url.to_string(),
@@ -115,6 +119,7 @@ impl LndNode {
 }
 
 #[async_trait]
+#[cfg_attr(coverage_nightly, coverage(off))]
 impl LightningNode for LndNode {
     async fn add_invoice(&self, req: AddInvoiceRequest) -> Result<AddInvoiceResponse> {
         let mut client = self.client.clone();
@@ -237,5 +242,24 @@ impl LightningNode for LndNode {
             }
             Err(e) => InvoiceUpdate::Error(e.to_string()),
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_setup_crypto_provider() {
+        // Should not panic when called
+        setup_crypto_provider();
+    }
+
+    #[test]
+    fn test_setup_crypto_provider_idempotent() {
+        // Should be safe to call multiple times
+        setup_crypto_provider();
+        setup_crypto_provider();
+        setup_crypto_provider();
     }
 }

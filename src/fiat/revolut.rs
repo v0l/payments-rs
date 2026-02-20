@@ -551,3 +551,203 @@ pub struct CreateWebhookRequest {
     pub url: String,
     pub events: Vec<RevolutWebhookEvent>,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::webhook::WebhookMessage;
+    use hmac::Mac;
+    use std::collections::HashMap;
+
+    fn create_revolut_signature(secret: &str, version: &str, timestamp: &str, body: &[u8]) -> String {
+        let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
+        mac.update(version.as_bytes());
+        mac.update(b".");
+        mac.update(timestamp.as_bytes());
+        mac.update(b".");
+        mac.update(body);
+        let result = mac.finalize().into_bytes();
+        format!("{}={}", version, hex::encode(result))
+    }
+
+    #[test]
+    fn test_revolut_webhook_verify_valid() {
+        let secret = "test_secret";
+        let timestamp = "1234567890";
+        let body = r#"{"event":"ORDER_COMPLETED","order_id":"order_123","merchant_order_ext_ref":null}"#;
+
+        let signature = create_revolut_signature(secret, "v1", timestamp, body.as_bytes());
+
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([
+                ("revolut-signature".to_string(), signature),
+                ("revolut-request-timestamp".to_string(), timestamp.to_string()),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify(secret, &msg);
+        assert!(result.is_ok());
+        let webhook = result.unwrap();
+        assert_eq!(webhook.order_id, "order_123");
+        assert!(matches!(webhook.event, RevolutWebhookEvent::OrderCompleted));
+    }
+
+    #[test]
+    fn test_revolut_webhook_verify_missing_signature() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: b"{}".to_vec(),
+            headers: HashMap::from([
+                ("revolut-request-timestamp".to_string(), "1234567890".to_string()),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing Revolut-Signature"));
+    }
+
+    #[test]
+    fn test_revolut_webhook_verify_missing_timestamp() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: b"{}".to_vec(),
+            headers: HashMap::from([
+                ("revolut-signature".to_string(), "v1=abc123".to_string()),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("Missing Revolut-Request-Timestamp"));
+    }
+
+    #[test]
+    fn test_revolut_webhook_verify_invalid_signature() {
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: r#"{"event":"ORDER_COMPLETED","order_id":"123"}"#.as_bytes().to_vec(),
+            headers: HashMap::from([
+                ("revolut-signature".to_string(), "v1=invalid_signature".to_string()),
+                ("revolut-request-timestamp".to_string(), "1234567890".to_string()),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify("secret", &msg);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().to_string().contains("No valid signature found"));
+    }
+
+    #[test]
+    fn test_revolut_webhook_event_serde() {
+        let json = r#""ORDER_COMPLETED""#;
+        let event: RevolutWebhookEvent = serde_json::from_str(json).unwrap();
+        assert!(matches!(event, RevolutWebhookEvent::OrderCompleted));
+
+        let serialized = serde_json::to_string(&RevolutWebhookEvent::OrderAuthorised).unwrap();
+        assert_eq!(serialized, r#""ORDER_AUTHORISED""#);
+    }
+
+    #[test]
+    fn test_revolut_order_state_serde() {
+        let json = r#""completed""#;
+        let state: RevolutOrderState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, RevolutOrderState::Completed));
+    }
+
+    #[test]
+    fn test_revolut_payment_state_serde() {
+        let json = r#""captured""#;
+        let state: RevolutPaymentState = serde_json::from_str(json).unwrap();
+        assert!(matches!(state, RevolutPaymentState::Captured));
+    }
+
+    #[test]
+    fn test_revolut_line_item_simple() {
+        let item = RevolutLineItem::simple("Test Item".to_string(), 2, 1000);
+        assert_eq!(item.name, "Test Item");
+        assert_eq!(item.quantity.value, 2);
+        assert_eq!(item.unit_price_amount, 1000);
+        assert_eq!(item.total_amount, 2000);
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_type() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_type(RevolutLineItemType::Digital);
+        assert!(matches!(item.item_type, Some(RevolutLineItemType::Digital)));
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_description() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_description("A test item".to_string());
+        assert_eq!(item.description, Some("A test item".to_string()));
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_unit() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_unit("kg".to_string());
+        assert_eq!(item.quantity.unit, Some("kg".to_string()));
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_discounts() {
+        let item = RevolutLineItem::simple("Test".to_string(), 2, 100)
+            .with_discounts(vec![RevolutDiscount {
+                name: "10% off".to_string(),
+                amount: 20,
+            }]);
+        assert_eq!(item.total_amount, 180); // 200 - 20
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_taxes() {
+        let item = RevolutLineItem::simple("Test".to_string(), 2, 100)
+            .with_taxes(vec![RevolutTax {
+                name: "VAT".to_string(),
+                amount: 40,
+            }]);
+        assert_eq!(item.total_amount, 240); // 200 + 40
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_images() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_images(vec!["https://example.com/image.jpg".to_string()]);
+        assert_eq!(
+            item.image_urls,
+            Some(vec!["https://example.com/image.jpg".to_string()])
+        );
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_url() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_url("https://example.com/product".to_string());
+        assert_eq!(item.url, Some("https://example.com/product".to_string()));
+    }
+
+    #[test]
+    fn test_revolut_line_item_with_external_id() {
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
+            .with_external_id("ext_123".to_string());
+        assert_eq!(item.external_id, Some("ext_123".to_string()));
+    }
+
+    #[test]
+    fn test_revolut_config_clone() {
+        let config = RevolutConfig {
+            url: Some("https://merchant.revolut.com".to_string()),
+            api_version: "2024-09-01".to_string(),
+            token: "test_token".to_string(),
+            public_key: "pk_test".to_string(),
+        };
+        let cloned = config.clone();
+        assert_eq!(cloned.token, "test_token");
+        assert_eq!(cloned.api_version, "2024-09-01");
+    }
+}

@@ -145,3 +145,103 @@ impl Display for CurrencyAmount {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_currency_display() {
+        assert_eq!(Currency::EUR.to_string(), "EUR");
+        assert_eq!(Currency::BTC.to_string(), "BTC");
+        assert_eq!(Currency::USD.to_string(), "USD");
+        assert_eq!(Currency::GBP.to_string(), "GBP");
+        assert_eq!(Currency::CAD.to_string(), "CAD");
+        assert_eq!(Currency::CHF.to_string(), "CHF");
+        assert_eq!(Currency::AUD.to_string(), "AUD");
+        assert_eq!(Currency::JPY.to_string(), "JPY");
+    }
+
+    #[test]
+    fn test_currency_from_str() {
+        assert_eq!("eur".parse::<Currency>(), Ok(Currency::EUR));
+        assert_eq!("EUR".parse::<Currency>(), Ok(Currency::EUR));
+        assert_eq!("usd".parse::<Currency>(), Ok(Currency::USD));
+        assert_eq!("btc".parse::<Currency>(), Ok(Currency::BTC));
+        assert_eq!("gbp".parse::<Currency>(), Ok(Currency::GBP));
+        assert_eq!("cad".parse::<Currency>(), Ok(Currency::CAD));
+        assert_eq!("chf".parse::<Currency>(), Ok(Currency::CHF));
+        assert_eq!("aud".parse::<Currency>(), Ok(Currency::AUD));
+        assert_eq!("jpy".parse::<Currency>(), Ok(Currency::JPY));
+        assert_eq!("invalid".parse::<Currency>(), Err(()));
+    }
+
+    #[test]
+    fn test_currency_amount_millisats() {
+        let amount = CurrencyAmount::millisats(1000);
+        assert_eq!(amount.currency(), Currency::BTC);
+        assert_eq!(amount.value(), 1000);
+    }
+
+    #[test]
+    fn test_currency_amount_from_u64() {
+        let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
+        assert_eq!(amount.currency(), Currency::USD);
+        assert_eq!(amount.value(), 2000);
+    }
+
+    #[test]
+    fn test_currency_amount_from_f32_fiat() {
+        let amount = CurrencyAmount::from_f32(Currency::USD, 20.00);
+        assert_eq!(amount.currency(), Currency::USD);
+        assert_eq!(amount.value(), 2000); // 2000 cents
+    }
+
+    #[test]
+    fn test_currency_amount_from_f32_btc() {
+        let amount = CurrencyAmount::from_f32(Currency::BTC, 1.0);
+        assert_eq!(amount.currency(), Currency::BTC);
+        assert_eq!(amount.value(), 100_000_000_000); // 1 BTC in milli-sats
+    }
+
+    #[test]
+    fn test_currency_amount_value_f32_fiat() {
+        let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
+        assert!((amount.value_f32() - 20.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_currency_amount_value_f32_btc() {
+        let amount = CurrencyAmount::from_u64(Currency::BTC, 100_000_000_000);
+        assert!((amount.value_f32() - 1.0).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_currency_amount_sub_same_currency() {
+        let a = CurrencyAmount::from_u64(Currency::USD, 2000);
+        let b = CurrencyAmount::from_u64(Currency::USD, 500);
+        let result = (a - b).unwrap();
+        assert_eq!(result.value(), 1500);
+        assert_eq!(result.currency(), Currency::USD);
+    }
+
+    #[test]
+    fn test_currency_amount_sub_different_currency() {
+        let a = CurrencyAmount::from_u64(Currency::USD, 2000);
+        let b = CurrencyAmount::from_u64(Currency::EUR, 500);
+        let result = a - b;
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_currency_amount_display_fiat() {
+        let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
+        assert_eq!(amount.to_string(), "USD 20.00");
+    }
+
+    #[test]
+    fn test_currency_amount_display_btc() {
+        let amount = CurrencyAmount::from_u64(Currency::BTC, 100_000_000_000);
+        assert_eq!(amount.to_string(), "BTC 1.00000000");
+    }
+}
