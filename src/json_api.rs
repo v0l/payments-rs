@@ -1,14 +1,13 @@
+use crate::USER_AGENT;
 use anyhow::{Result, bail};
 use log::debug;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT as USER_AGENT_HEADER};
 use reqwest::{Client, Method, Request, RequestBuilder, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use std::error::Error;
 use std::sync::Arc;
 use std::time::Duration;
-
-const UA: &'static str = "payments-rs/1.0";
 
 pub trait TokenGen: Send + Sync {
     fn generate_token(
@@ -31,7 +30,7 @@ pub struct JsonApi {
 impl JsonApi {
     pub fn new(base: &str) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, UA.parse()?);
+        headers.insert(USER_AGENT_HEADER, USER_AGENT.parse()?);
         headers.insert(ACCEPT, "application/json; charset=utf-8".parse()?);
 
         let client = Client::builder()
@@ -49,7 +48,7 @@ impl JsonApi {
 
     pub fn token(base: &str, token: &str, allow_invalid_certs: bool) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, UA.parse()?);
+        headers.insert(USER_AGENT_HEADER, USER_AGENT.parse()?);
         headers.insert(AUTHORIZATION, token.parse()?);
         headers.insert(ACCEPT, "application/json; charset=utf-8".parse()?);
 
@@ -72,7 +71,7 @@ impl JsonApi {
         tg: impl TokenGen + 'static,
     ) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, UA.parse()?);
+        headers.insert(USER_AGENT_HEADER, USER_AGENT.parse()?);
         headers.insert(ACCEPT, "application/json; charset=utf-8".parse()?);
 
         let client = Client::builder()

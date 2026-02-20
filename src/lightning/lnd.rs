@@ -1,3 +1,5 @@
+//! LND (Lightning Network Daemon) integration.
+
 use crate::lightning::{
     AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest,
     PayInvoiceResponse,
@@ -9,18 +11,91 @@ use fedimint_tonic_lnd::invoicesrpc::{CancelInvoiceMsg, LookupInvoiceMsg};
 use fedimint_tonic_lnd::lnrpc::invoice::InvoiceState;
 use fedimint_tonic_lnd::lnrpc::{Invoice, InvoiceSubscription};
 use fedimint_tonic_lnd::routerrpc::SendPaymentRequest;
-pub use fedimint_tonic_lnd::setup_crypto_provider;
 use fedimint_tonic_lnd::{Client, connect};
 use futures::{Stream, StreamExt};
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Once;
 
+static INIT_CRYPTO: Once = Once::new();
+
+/// Initialize the rustls crypto provider.
+///
+/// This must be called before creating any [`LndNode`] connections.
+/// It is safe to call multiple times; only the first call has any effect.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use payments_rs::lightning::setup_crypto_provider;
+///
+/// fn main() {
+///     setup_crypto_provider();
+///     // Now you can create LndNode connections
+/// }
+/// ```
+pub fn setup_crypto_provider() {
+    INIT_CRYPTO.call_once(|| {
+        // Only install if no provider is already set
+        if rustls::crypto::CryptoProvider::get_default().is_none() {
+            #[cfg(feature = "tls-ring")]
+            let provider = rustls::crypto::ring::default_provider();
+            #[cfg(all(feature = "tls-aws", not(feature = "tls-ring")))]
+            let provider = rustls::crypto::aws_lc_rs::default_provider();
+            
+            let _ = provider.install_default();
+        }
+    });
+}
+
+/// LND (Lightning Network Daemon) client.
+///
+/// Provides direct connection to an LND node for creating invoices,
+/// paying invoices, and subscribing to invoice updates.
+///
+/// # Example
+///
+/// ```rust,ignore
+/// use payments_rs::lightning::{LndNode, LightningNode, AddInvoiceRequest, setup_crypto_provider};
+/// use std::path::Path;
+///
+/// #[tokio::main]
+/// async fn main() -> anyhow::Result<()> {
+///     setup_crypto_provider();
+///     
+///     let lnd = LndNode::new(
+///         "https://localhost:10009",
+///         Path::new("/path/to/tls.cert"),
+///         Path::new("/path/to/admin.macaroon"),
+///     ).await?;
+///     
+///     let invoice = lnd.add_invoice(AddInvoiceRequest {
+///         amount: 1000,
+///         memo: Some("Test payment".to_string()),
+///         expire: None,
+///     }).await?;
+///     
+///     println!("Pay this invoice: {}", invoice.pr());
+///     Ok(())
+/// }
+/// ```
 #[derive(Clone)]
 pub struct LndNode {
     client: Client,
 }
 
 impl LndNode {
+    /// Create a new LND client connection.
+    ///
+    /// # Arguments
+    ///
+    /// * `url` - The gRPC URL of the LND node (e.g., "https://localhost:10009")
+    /// * `cert` - Path to the TLS certificate file (tls.cert)
+    /// * `macaroon` - Path to the macaroon file (admin.macaroon or invoice.macaroon)
+    ///
+    /// # Note
+    ///
+    /// You must call [`setup_crypto_provider`] before creating connections.
     pub async fn new(url: &str, cert: &Path, macaroon: &Path) -> Result<Self> {
         let lnd = connect(
             url.to_string(),
@@ -28,11 +103,12 @@ impl LndNode {
             macaroon.to_str().unwrap(),
         )
         .await
-        .map_err(|e| anyhow!("Failed to connect to LND: {}", e.to_string()))?;
+        .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
 
         Ok(Self { client: lnd })
     }
 
+    /// Get a clone of the underlying LND client for advanced operations.
     pub fn client(&self) -> Client {
         self.client.clone()
     }
@@ -59,11 +135,11 @@ impl LightningNode for LndNode {
         )?)
     }
 
-    async fn cancel_invoice(&self, id: &Vec<u8>) -> Result<()> {
+    async fn cancel_invoice(&self, id: &[u8]) -> Result<()> {
         let mut client = self.client.clone();
         let ln = client.invoices();
         ln.cancel_invoice(CancelInvoiceMsg {
-            payment_hash: id.clone().into(),
+            payment_hash: id.to_vec(),
         })
         .await?;
         Ok(())

@@ -2,15 +2,20 @@
 name = "payments-rs"
 version = "0.2.0"
 edition = "2024"
+description = "A Rust library for integrating with multiple payment providers (Stripe, Revolut, LND, Bitvora)"
+license = "MIT"
+repository = "https://github.com/v0l/payments-rs"
+keywords = ["payments", "stripe", "lightning", "bitcoin", "revolut"]
+categories = ["api-bindings", "asynchronous"]
 
 [features]
-default = ["method-lnd", "method-bitvora", "method-revolut", "method-stripe"]
-method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex"]
+default = ["method-lnd", "method-bitvora", "method-revolut", "method-stripe", "tls-ring"]
+method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]
 method-bitvora = ["lightning", "json-api", "webhook", "dep:tokio-stream"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
 method-stripe = ["fiat", "webhook", "dep:hex", "dep:serde", "dep:serde_html_form", "dep:reqwest"]
-tls-ring = ["fedimint-tonic-lnd/tls-ring"]
-tls-aws = ["fedimint-tonic-lnd/tls-aws-lc-rs"]
+tls-ring = ["fedimint-tonic-lnd?/tls-ring", "rustls?/ring"]
+tls-aws = ["fedimint-tonic-lnd?/tls-aws-lc", "rustls?/aws-lc-rs"]
 
 json-api = ["dep:serde", "dep:serde_json", "dep:reqwest"]
 webhook = ["dep:tokio", "tokio/sync", "tokio-stream/sync", "dep:hmac", "dep:sha2"]
@@ -27,7 +32,8 @@ log = "0.4"
 tokio = { version = "1", default-features = false, optional = true }
 tokio-stream = { version = "0.1", optional = true }
 rocket = { version = "0.5", optional = true, default-features = false }
-fedimint-tonic-lnd = { git = "https://github.com/v0l/tonic_lnd.git", rev = "57fcd1ac2e8834c6f93cfa3c84ba67420a9dd3ed", default-features = false, features = ["lightningrpc", "invoicesrpc", "routerrpc"], optional = true }
+fedimint-tonic-lnd = { version = "0.4", default-features = false, features = ["lightningrpc", "invoicesrpc", "routerrpc"], optional = true }
+rustls = { version = "0.23", default-features = false, optional = true }
 reqwest = { version = "0.13", optional = true }
 serde = { version = "1", optional = true }
 serde_json = { version = "1", optional = true }

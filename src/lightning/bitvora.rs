@@ -54,7 +54,7 @@ impl LightningNode for BitvoraNode {
         Ok(AddInvoiceResponse::from_invoice(&rsp.data.payment_request, Some(rsp.data.id))?)
     }
 
-    async fn cancel_invoice(&self, _id: &Vec<u8>) -> anyhow::Result<()> {
+    async fn cancel_invoice(&self, _id: &[u8]) -> anyhow::Result<()> {
         bail!("Not supported yet!")
     }
 
@@ -195,6 +195,7 @@ enum BitvoraWebhookEvent {
 
 #[derive(Deserialize, Debug, Clone)]
 struct BitvoraPayment {
+    #[allow(dead_code)]
     pub id: String,
     pub lightning_invoice_id: String,
     // the payment request

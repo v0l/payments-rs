@@ -1,18 +1,17 @@
 use crate::currency::{Currency, CurrencyAmount};
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
 use crate::webhook::WebhookMessage;
+use crate::USER_AGENT;
 use anyhow::{Context, Result, anyhow, bail};
 use hmac::{Hmac, Mac};
 use log::{debug, warn};
-use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT as USER_AGENT_HEADER};
 use reqwest::{Client, Url};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::Duration;
-
-const UA: &'static str = "payments-rs/1.0";
 
 /// Form-encoded HTTP client for Stripe API
 #[derive(Clone)]
@@ -25,7 +24,7 @@ struct FormEncodedApi {
 impl FormEncodedApi {
     fn new(base: &str, api_key: String) -> Result<Self> {
         let mut headers = HeaderMap::new();
-        headers.insert(USER_AGENT, UA.parse()?);
+        headers.insert(USER_AGENT_HEADER, USER_AGENT.parse()?);
 
         let client = Client::builder()
             .default_headers(headers)
@@ -162,6 +161,13 @@ impl StripeApi {
             )?,
             webhook_secret: config.webhook_secret,
         })
+    }
+
+    /// Get the webhook secret for verifying incoming webhook events.
+    ///
+    /// Use this with [`StripeWebhookEvent::verify`] to validate webhook signatures.
+    pub fn webhook_secret(&self) -> Option<&str> {
+        self.webhook_secret.as_deref()
     }
 
     /// List all webhook endpoints
@@ -389,7 +395,7 @@ impl FiatPaymentService for StripeApi {
                 s.expire_checkout_session(&id).await?;
             } else {
                 // Try payment intent first, fall back to checkout session
-                if let Err(_) = s.cancel_payment_intent(&id).await {
+                if s.cancel_payment_intent(&id).await.is_err() {
                     s.expire_checkout_session(&id).await?;
                 }
             }

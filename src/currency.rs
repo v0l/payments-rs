@@ -1,17 +1,31 @@
-use anyhow::{Result, ensure};
+//! Currency types and amounts for payment processing.
+//!
+//! This module provides types for representing currencies and monetary amounts
+//! in a type-safe manner.
+
+use anyhow::{ensure, Result};
 use std::fmt::{Display, Formatter};
 use std::ops::Sub;
 use std::str::FromStr;
 
+/// Supported currency types for payment processing.
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
 pub enum Currency {
+    /// Euro
     EUR,
+    /// Bitcoin (stored internally as milli-satoshis)
     BTC,
+    /// US Dollar
     USD,
+    /// British Pound Sterling
     GBP,
+    /// Canadian Dollar
     CAD,
+    /// Swiss Franc
     CHF,
+    /// Australian Dollar
     AUD,
+    /// Japanese Yen
     JPY,
 }
 
@@ -48,20 +62,43 @@ impl FromStr for Currency {
     }
 }
 
+/// A monetary amount with an associated currency.
+///
+/// For fiat currencies, amounts are stored in the smallest unit (e.g., cents for USD).
+/// For Bitcoin, amounts are stored in milli-satoshis.
+///
+/// # Example
+///
+/// ```
+/// use payments_rs::currency::{Currency, CurrencyAmount};
+///
+/// // Create $20.00 USD
+/// let usd = CurrencyAmount::from_f32(Currency::USD, 20.00);
+/// assert_eq!(usd.value(), 2000); // 2000 cents
+///
+/// // Create 1000 milli-satoshis
+/// let btc = CurrencyAmount::millisats(1000);
+/// ```
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CurrencyAmount(Currency, u64);
 
 impl CurrencyAmount {
     const MILLI_SATS: f64 = 1.0e11;
 
+    /// Create a Bitcoin amount from milli-satoshis.
     pub fn millisats(amount: u64) -> Self {
         CurrencyAmount(Currency::BTC, amount)
     }
 
+    /// Create a currency amount from the smallest unit (cents for fiat, milli-sats for BTC).
     pub fn from_u64(currency: Currency, amount: u64) -> Self {
         CurrencyAmount(currency, amount)
     }
 
+    /// Create a currency amount from a floating-point value.
+    ///
+    /// For fiat currencies, this expects the standard unit (e.g., 20.00 for $20).
+    /// For Bitcoin, this expects the BTC amount (e.g., 0.001 for 0.001 BTC).
     pub fn from_f32(currency: Currency, amount: f32) -> Self {
         CurrencyAmount(
             currency,
@@ -72,10 +109,12 @@ impl CurrencyAmount {
         )
     }
 
+    /// Get the raw value in the smallest unit.
     pub fn value(&self) -> u64 {
         self.1
     }
 
+    /// Get the value as a floating-point number in the standard unit.
     pub fn value_f32(&self) -> f32 {
         match self.0 {
             Currency::BTC => (self.1 as f64 / Self::MILLI_SATS) as f32,
@@ -83,6 +122,7 @@ impl CurrencyAmount {
         }
     }
 
+    /// Get the currency type.
     pub fn currency(&self) -> Currency {
         self.0
     }
