@@ -145,7 +145,11 @@ impl Sub for CurrencyAmount {
 
     fn sub(self, rhs: Self) -> Self::Output {
         ensure!(self.0 == rhs.0, "Currency doesnt match");
-        Ok(CurrencyAmount::from_u64(self.0, self.1 - rhs.1))
+        let value = self
+            .1
+            .checked_sub(rhs.1)
+            .ok_or_else(|| anyhow::anyhow!("Subtraction would underflow: {} - {}", self, rhs))?;
+        Ok(CurrencyAmount::from_u64(self.0, value))
     }
 }
 
@@ -246,6 +250,27 @@ mod tests {
         let b = CurrencyAmount::from_u64(Currency::EUR, 500);
         let result = a - b;
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_currency_amount_sub_underflow_returns_error() {
+        let a = CurrencyAmount::from_u64(Currency::USD, 500);
+        let b = CurrencyAmount::from_u64(Currency::USD, 2000);
+        let result = a - b;
+        assert!(result.is_err());
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Subtraction would underflow"));
+    }
+
+    #[test]
+    fn test_currency_amount_sub_equal_values() {
+        let a = CurrencyAmount::from_u64(Currency::USD, 1000);
+        let b = CurrencyAmount::from_u64(Currency::USD, 1000);
+        let result = (a - b).unwrap();
+        assert_eq!(result.value(), 0);
+        assert_eq!(result.currency(), Currency::USD);
     }
 
     #[test]
