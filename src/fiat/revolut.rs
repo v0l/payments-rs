@@ -658,6 +658,26 @@ pub struct RevolutSavedPaymentMethod {
     /// Who the method was saved for: `customer` or `merchant`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub saved_for: Option<String>,
+    /// Card details (present for `card` methods): brand, last 4, expiry, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub method_details: Option<RevolutSavedCardDetails>,
+}
+
+/// Non-sensitive card details for a saved payment method (PCI-safe: no PAN/CVV).
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RevolutSavedCardDetails {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brand: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last4: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_month: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_year: Option<u16>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub funding: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub issuer_country: Option<String>,
 }
 
 impl RevolutSavedPaymentMethod {
@@ -1199,13 +1219,17 @@ mod tests {
         // Uppercase form is what the live customer payment-methods endpoint
         // returns; lowercase is accepted via aliases for robustness.
         let json = r#"[
-            { "id": "pm_merchant", "type": "CARD", "saved_for": "MERCHANT", "method_details": { "last4": "5709" } },
+            { "id": "pm_merchant", "type": "CARD", "saved_for": "MERCHANT", "method_details": { "brand": "VISA", "last4": "5709", "expiry_month": 12, "expiry_year": 2029 } },
             { "id": "pm_customer", "type": "card", "saved_for": "customer" },
             { "id": "pm_none", "type": "revolut_pay" }
         ]"#;
         let methods: Vec<RevolutSavedPaymentMethod> = serde_json::from_str(json).unwrap();
         assert_eq!(methods.len(), 3);
         assert_eq!(methods[0].id, "pm_merchant");
+        assert_eq!(
+            methods[0].method_details.as_ref().and_then(|d| d.last4.as_deref()),
+            Some("5709")
+        );
         assert!(matches!(methods[0].kind, RevolutSavedPaymentMethodType::Card));
         assert!(matches!(methods[2].kind, RevolutSavedPaymentMethodType::RevolutPay));
         assert!(methods[0].is_merchant_initiated());
