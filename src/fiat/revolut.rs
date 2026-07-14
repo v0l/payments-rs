@@ -238,6 +238,34 @@ impl RevolutApi {
         self.api.get(&format!("/api/orders/{}", order_id)).await
     }
 
+    /// Retrieve a customer's saved payment methods.
+    ///
+    /// The reusable payment method id (needed for off-session/merchant-initiated
+    /// charges) is NOT returned on the order object — it must be fetched here
+    /// after the customer completes a savable checkout.
+    ///
+    /// When `only_merchant` is true, only payment methods saved for
+    /// merchant-initiated transactions (`saved_for == "merchant"`) are returned
+    /// (filtered client-side).
+    ///
+    /// Uses the `/api/1.0/customers/{id}/payment-methods` endpoint, which
+    /// returns a bare JSON array.
+    pub async fn get_customer_payment_methods(
+        &self,
+        customer_id: &str,
+        only_merchant: bool,
+    ) -> Result<Vec<RevolutSavedPaymentMethod>> {
+        let all: Vec<RevolutSavedPaymentMethod> = self
+            .api
+            .get(&format!("/api/1.0/customers/{}/payment-methods", customer_id))
+            .await?;
+        Ok(if only_merchant {
+            all.into_iter().filter(|pm| pm.is_merchant_initiated()).collect()
+        } else {
+            all
+        })
+    }
+
     pub async fn cancel_order(&self, order_id: &str) -> Result<RevolutOrder> {
         self.api
             .req::<_, ()>(
@@ -300,10 +328,14 @@ impl FiatPaymentService for RevolutApi {
                     Some("merchant".to_string()),
                 )
                 .await?;
+            // Note: the reusable saved payment_method_id is not available yet at
+            // order-creation time — it only exists once the customer completes
+            // the savable checkout. Fetch it later via
+            // `get_customer_payment_methods(customer_id, true)`.
             Ok(SubscriptionPaymentInfo {
                 external_id: rsp.id.clone(),
-                customer_id: rsp.customer_id.clone(),
-                payment_method_id: rsp.saved_payment_method().map(|(id, _)| id),
+                customer_id: rsp.customer_id(),
+                payment_method_id: None,
                 checkout_url: rsp.checkout_url.clone(),
                 raw_data: serde_json::to_string(&rsp)?,
             })
@@ -402,9 +434,15 @@ pub struct SavedPaymentMethodRef {
 /// Saved payment method type used when charging a saved method off-session.
 ///
 /// At the customer level Revolut only exposes `card` and `revolut_pay`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// The Revolut API returns these in SCREAMING_SNAKE_CASE (`CARD`,
+/// `REVOLUT_PAY`) on the customer payment-methods endpoint, but accepts/returns
+/// lowercase elsewhere — accept both on deserialize.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RevolutSavedPaymentMethodType {
+    #[serde(rename = "CARD", alias = "card")]
     Card,
+    #[serde(rename = "REVOLUT_PAY", alias = "revolut_pay")]
     RevolutPay,
 }
 
@@ -567,10 +605,12 @@ pub struct RevolutOrder {
     pub outstanding_amount: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkout_url: Option<String>,
-    /// Customer ID attached to the order (present once a customer is
-    /// created/attached, e.g. after a savable checkout completes).
+    /// Customer attached to the order (present once a customer is
+    /// created/attached, e.g. after a savable checkout completes). The Revolut
+    /// API nests this as an object (`customer.id`), NOT a top-level
+    /// `customer_id` — use [`RevolutOrder::customer_id`] to read the id.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub customer_id: Option<String>,
+    pub customer: Option<RevolutOrderCustomer>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payments: Option<Vec<RevolutOrderPayment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -578,16 +618,57 @@ pub struct RevolutOrder {
 }
 
 impl RevolutOrder {
+    /// The id of the customer attached to this order, if any.
+    pub fn customer_id(&self) -> Option<String> {
+        self.customer.as_ref().map(|c| c.id.clone())
+    }
+
     /// Extract the saved payment method (id and type) from the order's
     /// payments, if a payment method was saved during checkout.
     ///
-    /// Returns the first payment that carries a payment method with an `id`.
+    /// Note: the Revolut order object does NOT carry the reusable saved payment
+    /// method id — use [`RevolutApi::get_customer_payment_methods`] with the
+    /// customer id instead. This helper only inspects the inline payment method.
     pub fn saved_payment_method(&self) -> Option<(String, RevolutPaymentMethodType)> {
         self.payments.as_ref()?.iter().find_map(|p| {
             let pm = p.payment_method.as_ref()?;
             let id = pm.id.as_ref()?;
             Some((id.clone(), pm.kind.clone()))
         })
+    }
+}
+
+/// Customer object nested on a [`RevolutOrder`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RevolutOrderCustomer {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+}
+
+/// A payment method saved against a Revolut customer, returned by
+/// [`RevolutApi::get_customer_payment_methods`].
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RevolutSavedPaymentMethod {
+    /// Reusable payment method id used for off-session charges.
+    pub id: String,
+    /// Payment method type (`card` or `revolut_pay`).
+    #[serde(rename = "type")]
+    pub kind: RevolutSavedPaymentMethodType,
+    /// Who the method was saved for: `customer` or `merchant`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub saved_for: Option<String>,
+}
+
+impl RevolutSavedPaymentMethod {
+    /// Whether this saved method supports merchant-initiated (off-session)
+    /// transactions. The API returns `saved_for` as `MERCHANT`/`CUSTOMER`
+    /// (case-insensitive match).
+    pub fn is_merchant_initiated(&self) -> bool {
+        self.saved_for
+            .as_deref()
+            .map(|s| s.eq_ignore_ascii_case("merchant"))
+            .unwrap_or(false)
     }
 }
 
@@ -599,8 +680,12 @@ pub struct RevolutOrderPayment {
     pub decline_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bank_message: Option<String>,
-    pub created_at: DateTime<Utc>,
-    pub updated_at: DateTime<Utc>,
+    // The pay-order (off-session charge) response omits these timestamps, so
+    // they are optional even though the order fetch includes them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub updated_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
     pub amount: u64,
@@ -1046,7 +1131,7 @@ mod tests {
             "amount": 1000,
             "currency": "EUR",
             "outstanding_amount": 0,
-            "customer_id": "cust_42",
+            "customer": { "id": "cust_42", "email": "a@b.com" },
             "payments": [{
                 "id": "pay_1",
                 "state": "captured",
@@ -1061,7 +1146,7 @@ mod tests {
             }]
         }"#;
         let order: RevolutOrder = serde_json::from_str(json).unwrap();
-        assert_eq!(order.customer_id.as_deref(), Some("cust_42"));
+        assert_eq!(order.customer_id().as_deref(), Some("cust_42"));
         let (pm_id, pm_type) = order.saved_payment_method().unwrap();
         assert_eq!(pm_id, "pm_99");
         assert!(matches!(pm_type, RevolutPaymentMethodType::Card));
@@ -1080,7 +1165,7 @@ mod tests {
             "outstanding_amount": 1000
         }"#;
         let order: RevolutOrder = serde_json::from_str(json).unwrap();
-        assert!(order.customer_id.is_none());
+        assert!(order.customer_id().is_none());
         assert!(order.saved_payment_method().is_none());
     }
 
@@ -1107,6 +1192,42 @@ mod tests {
         }"#;
         let order: RevolutOrder = serde_json::from_str(json).unwrap();
         assert!(order.saved_payment_method().is_none());
+    }
+
+    #[test]
+    fn test_saved_payment_method_deserialize_and_mit_filter() {
+        // Uppercase form is what the live customer payment-methods endpoint
+        // returns; lowercase is accepted via aliases for robustness.
+        let json = r#"[
+            { "id": "pm_merchant", "type": "CARD", "saved_for": "MERCHANT", "method_details": { "last4": "5709" } },
+            { "id": "pm_customer", "type": "card", "saved_for": "customer" },
+            { "id": "pm_none", "type": "revolut_pay" }
+        ]"#;
+        let methods: Vec<RevolutSavedPaymentMethod> = serde_json::from_str(json).unwrap();
+        assert_eq!(methods.len(), 3);
+        assert_eq!(methods[0].id, "pm_merchant");
+        assert!(matches!(methods[0].kind, RevolutSavedPaymentMethodType::Card));
+        assert!(matches!(methods[2].kind, RevolutSavedPaymentMethodType::RevolutPay));
+        assert!(methods[0].is_merchant_initiated());
+        assert!(!methods[1].is_merchant_initiated());
+        assert!(!methods[2].is_merchant_initiated());
+    }
+
+    #[test]
+    fn test_order_customer_nested_id() {
+        let json = r#"{
+            "id": "order_1",
+            "token": "tok_1",
+            "state": "completed",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "amount": 1000,
+            "currency": "EUR",
+            "outstanding_amount": 0,
+            "customer": { "id": "cust_nested" }
+        }"#;
+        let order: RevolutOrder = serde_json::from_str(json).unwrap();
+        assert_eq!(order.customer_id().as_deref(), Some("cust_nested"));
     }
 
     #[test]
