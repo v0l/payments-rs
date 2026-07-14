@@ -1,5 +1,5 @@
 use crate::currency::{Currency, CurrencyAmount};
-use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
+use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem, SubscriptionPaymentInfo};
 use crate::json_api::{JsonApi, TokenGen};
 use crate::webhook::WebhookMessage;
 use anyhow::{Context, Result, anyhow, bail};
@@ -94,11 +94,33 @@ impl RevolutApi {
             .await
     }
 
+    #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn create_order(
         &self,
         amount: CurrencyAmount,
         description: Option<String>,
         line_items: Option<Vec<LineItem>>,
+    ) -> Result<RevolutOrder> {
+        self.create_order_ext(amount, description, line_items, None, None)
+            .await
+    }
+
+    /// Create an order with optional saved-payment-method support.
+    ///
+    /// * `customer` - Optional customer to create/attach to the order. Required
+    ///   (with at least an email, or an existing `id`) when saving a payment
+    ///   method or charging a saved one.
+    /// * `save_payment_method_for` - When set (e.g. `"merchant"`), instructs
+    ///   Revolut to save the payment method used to complete this order for
+    ///   future off-session, merchant-initiated charges.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub async fn create_order_ext(
+        &self,
+        amount: CurrencyAmount,
+        description: Option<String>,
+        line_items: Option<Vec<LineItem>>,
+        customer: Option<RevolutCustomer>,
+        save_payment_method_for: Option<String>,
     ) -> Result<RevolutOrder> {
         // Convert generic LineItems to Revolut's format
         let revolut_line_items = line_items.map(|items| {
@@ -148,9 +170,68 @@ impl RevolutApi {
                     },
                     description,
                     line_items: revolut_line_items,
+                    customer,
+                    save_payment_method_for,
                 },
             )
             .await
+    }
+
+    /// Pay for an existing order using a customer's saved payment method.
+    ///
+    /// This drives the merchant-initiated (off-session) charge once a payment
+    /// method has been saved for the merchant. See
+    /// [`RevolutApi::create_off_session_order`] for the full flow.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub async fn pay_order(
+        &self,
+        order_id: &str,
+        req: PayOrderRequest,
+    ) -> Result<RevolutOrderPayment> {
+        self.api
+            .post(&format!("/api/orders/{}/payments", order_id), req)
+            .await
+    }
+
+    /// Create and charge an order off-session against a saved payment method
+    /// (merchant-initiated), returning the resulting order once charged.
+    ///
+    /// This is a two-step flow: create an order attached to the customer, then
+    /// pay for it using the saved payment method with `initiator = merchant`.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    pub async fn create_off_session_order(
+        &self,
+        customer_id: &str,
+        payment_method_id: &str,
+        payment_method_type: RevolutSavedPaymentMethodType,
+        amount: CurrencyAmount,
+        description: Option<String>,
+    ) -> Result<RevolutOrder> {
+        let order = self
+            .create_order_ext(
+                amount,
+                description,
+                None,
+                Some(RevolutCustomer {
+                    id: Some(customer_id.to_string()),
+                    ..Default::default()
+                }),
+                None,
+            )
+            .await?;
+        self.pay_order(
+            &order.id,
+            PayOrderRequest {
+                saved_payment_method: SavedPaymentMethodRef {
+                    kind: payment_method_type.as_str().to_string(),
+                    id: payment_method_id.to_string(),
+                    initiator: "merchant".to_string(),
+                },
+            },
+        )
+        .await?;
+        // Re-fetch to return the final order state after the charge
+        self.get_order(&order.id).await
     }
 
     pub async fn get_order(&self, order_id: &str) -> Result<RevolutOrder> {
@@ -194,6 +275,69 @@ impl FiatPaymentService for RevolutApi {
             Ok(())
         })
     }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn create_subscription(
+        &self,
+        description: &str,
+        amount: CurrencyAmount,
+        customer_email: Option<String>,
+        line_items: Option<Vec<LineItem>>,
+    ) -> Pin<Box<dyn Future<Output = Result<SubscriptionPaymentInfo>> + Send>> {
+        let s = self.clone();
+        let desc = description.to_string();
+        Box::pin(async move {
+            let customer = customer_email.map(|email| RevolutCustomer {
+                email: Some(email),
+                ..Default::default()
+            });
+            let rsp = s
+                .create_order_ext(
+                    amount,
+                    Some(desc),
+                    line_items,
+                    customer,
+                    Some("merchant".to_string()),
+                )
+                .await?;
+            Ok(SubscriptionPaymentInfo {
+                external_id: rsp.id.clone(),
+                customer_id: rsp.customer_id.clone(),
+                payment_method_id: rsp.saved_payment_method().map(|(id, _)| id),
+                checkout_url: rsp.checkout_url.clone(),
+                raw_data: serde_json::to_string(&rsp)?,
+            })
+        })
+    }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    fn charge_subscription(
+        &self,
+        customer_id: &str,
+        payment_method_id: &str,
+        amount: CurrencyAmount,
+        description: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<FiatPaymentInfo>> + Send>> {
+        let s = self.clone();
+        let customer_id = customer_id.to_string();
+        let payment_method_id = payment_method_id.to_string();
+        let desc = description.to_string();
+        Box::pin(async move {
+            let rsp = s
+                .create_off_session_order(
+                    &customer_id,
+                    &payment_method_id,
+                    RevolutSavedPaymentMethodType::Card,
+                    amount,
+                    Some(desc),
+                )
+                .await?;
+            Ok(FiatPaymentInfo {
+                raw_data: serde_json::to_string(&rsp)?,
+                external_id: rsp.id,
+            })
+        })
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -206,6 +350,72 @@ pub struct CreateOrderRequest {
     
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_items: Option<Vec<RevolutLineItem>>,
+
+    /// Customer to create/attach to the order. Required for saving or charging
+    /// a saved payment method.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customer: Option<RevolutCustomer>,
+
+    /// When set (e.g. `"merchant"`), save the payment method used to complete
+    /// this order for future off-session charges.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub save_payment_method_for: Option<String>,
+}
+
+/// A customer to create or attach to an order.
+///
+/// Provide an existing `id` to attach a known customer, or an `email` (and
+/// optionally `phone` / `full_name`) to create a new one. At least an email is
+/// required in order to save a payment method.
+#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+pub struct RevolutCustomer {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub phone: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub full_name: Option<String>,
+}
+
+/// Request body to pay for an order using a customer's saved payment method.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct PayOrderRequest {
+    pub saved_payment_method: SavedPaymentMethodRef,
+}
+
+/// Reference to a saved payment method used when charging off-session.
+#[derive(Clone, Serialize, Deserialize, Debug)]
+pub struct SavedPaymentMethodRef {
+    /// Payment method type as returned at the customer level (`card` or
+    /// `revolut_pay`).
+    #[serde(rename = "type")]
+    pub kind: String,
+    /// Saved payment method ID.
+    pub id: String,
+    /// Who initiates the payment: `customer` or `merchant`. Off-session
+    /// recurring charges must use `merchant`.
+    pub initiator: String,
+}
+
+/// Saved payment method type used when charging a saved method off-session.
+///
+/// At the customer level Revolut only exposes `card` and `revolut_pay`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevolutSavedPaymentMethodType {
+    Card,
+    RevolutPay,
+}
+
+impl RevolutSavedPaymentMethodType {
+    /// The wire value used in the Revolut API.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RevolutSavedPaymentMethodType::Card => "card",
+            RevolutSavedPaymentMethodType::RevolutPay => "revolut_pay",
+        }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -357,10 +567,28 @@ pub struct RevolutOrder {
     pub outstanding_amount: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub checkout_url: Option<String>,
+    /// Customer ID attached to the order (present once a customer is
+    /// created/attached, e.g. after a savable checkout completes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub customer_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub payments: Option<Vec<RevolutOrderPayment>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_items: Option<Vec<RevolutLineItem>>,
+}
+
+impl RevolutOrder {
+    /// Extract the saved payment method (id and type) from the order's
+    /// payments, if a payment method was saved during checkout.
+    ///
+    /// Returns the first payment that carries a payment method with an `id`.
+    pub fn saved_payment_method(&self) -> Option<(String, RevolutPaymentMethodType)> {
+        self.payments.as_ref()?.iter().find_map(|p| {
+            let pm = p.payment_method.as_ref()?;
+            let id = pm.id.as_ref()?;
+            Some((id.clone(), pm.kind.clone()))
+        })
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -736,6 +964,149 @@ mod tests {
         let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
             .with_external_id("ext_123".to_string());
         assert_eq!(item.external_id, Some("ext_123".to_string()));
+    }
+
+    #[test]
+    fn test_saved_payment_method_type_as_str() {
+        assert_eq!(RevolutSavedPaymentMethodType::Card.as_str(), "card");
+        assert_eq!(
+            RevolutSavedPaymentMethodType::RevolutPay.as_str(),
+            "revolut_pay"
+        );
+    }
+
+    #[test]
+    fn test_create_order_request_serialize_minimal() {
+        // customer / save_payment_method_for omitted when None
+        let req = CreateOrderRequest {
+            amount: 1000,
+            currency: "EUR".to_string(),
+            description: Some("Test".to_string()),
+            line_items: None,
+            customer: None,
+            save_payment_method_for: None,
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert!(json.get("customer").is_none());
+        assert!(json.get("save_payment_method_for").is_none());
+        assert_eq!(json["amount"], 1000);
+    }
+
+    #[test]
+    fn test_create_order_request_serialize_with_customer_and_save() {
+        let req = CreateOrderRequest {
+            amount: 2500,
+            currency: "USD".to_string(),
+            description: None,
+            line_items: None,
+            customer: Some(RevolutCustomer {
+                email: Some("a@b.com".to_string()),
+                ..Default::default()
+            }),
+            save_payment_method_for: Some("merchant".to_string()),
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["save_payment_method_for"], "merchant");
+        assert_eq!(json["customer"]["email"], "a@b.com");
+        // unset customer fields are skipped
+        assert!(json["customer"].get("id").is_none());
+        assert!(json["customer"].get("phone").is_none());
+    }
+
+    #[test]
+    fn test_revolut_customer_default_serialize_empty() {
+        let c = RevolutCustomer::default();
+        let json = serde_json::to_value(&c).unwrap();
+        assert_eq!(json, serde_json::json!({}));
+    }
+
+    #[test]
+    fn test_pay_order_request_serialize() {
+        let req = PayOrderRequest {
+            saved_payment_method: SavedPaymentMethodRef {
+                kind: "card".to_string(),
+                id: "pm_123".to_string(),
+                initiator: "merchant".to_string(),
+            },
+        };
+        let json = serde_json::to_value(&req).unwrap();
+        assert_eq!(json["saved_payment_method"]["type"], "card");
+        assert_eq!(json["saved_payment_method"]["id"], "pm_123");
+        assert_eq!(json["saved_payment_method"]["initiator"], "merchant");
+    }
+
+    #[test]
+    fn test_order_deserialize_customer_id_and_saved_method() {
+        let json = r#"{
+            "id": "order_1",
+            "token": "tok_1",
+            "state": "completed",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "amount": 1000,
+            "currency": "EUR",
+            "outstanding_amount": 0,
+            "customer_id": "cust_42",
+            "payments": [{
+                "id": "pay_1",
+                "state": "captured",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "amount": 1000,
+                "payment_method": {
+                    "id": "pm_99",
+                    "type": "card",
+                    "card_last_four": "4242"
+                }
+            }]
+        }"#;
+        let order: RevolutOrder = serde_json::from_str(json).unwrap();
+        assert_eq!(order.customer_id.as_deref(), Some("cust_42"));
+        let (pm_id, pm_type) = order.saved_payment_method().unwrap();
+        assert_eq!(pm_id, "pm_99");
+        assert!(matches!(pm_type, RevolutPaymentMethodType::Card));
+    }
+
+    #[test]
+    fn test_order_saved_payment_method_none_when_no_payments() {
+        let json = r#"{
+            "id": "order_1",
+            "token": "tok_1",
+            "state": "pending",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "amount": 1000,
+            "currency": "EUR",
+            "outstanding_amount": 1000
+        }"#;
+        let order: RevolutOrder = serde_json::from_str(json).unwrap();
+        assert!(order.customer_id.is_none());
+        assert!(order.saved_payment_method().is_none());
+    }
+
+    #[test]
+    fn test_order_saved_payment_method_none_when_method_missing_id() {
+        // A payment without a payment_method.id (not saved) yields None
+        let json = r#"{
+            "id": "order_1",
+            "token": "tok_1",
+            "state": "completed",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
+            "amount": 1000,
+            "currency": "EUR",
+            "outstanding_amount": 0,
+            "payments": [{
+                "id": "pay_1",
+                "state": "captured",
+                "created_at": "2024-01-01T00:00:00Z",
+                "updated_at": "2024-01-01T00:00:00Z",
+                "amount": 1000,
+                "payment_method": { "type": "card" }
+            }]
+        }"#;
+        let order: RevolutOrder = serde_json::from_str(json).unwrap();
+        assert!(order.saved_payment_method().is_none());
     }
 
     #[test]

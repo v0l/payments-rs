@@ -25,7 +25,7 @@
 //! ```
 
 use crate::currency::CurrencyAmount;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -108,6 +108,60 @@ pub trait FiatPaymentService: Send + Sync {
     ///
     /// * `id` - The external ID of the order to cancel
     fn cancel_order(&self, id: &str) -> Pin<Box<dyn Future<Output = Result<()>> + Send>>;
+
+    /// Create a subscription: an initial checkout that also saves the
+    /// customer's payment method for future merchant-initiated (off-session)
+    /// charges.
+    ///
+    /// The returned [`SubscriptionPaymentInfo`] carries a hosted
+    /// `checkout_url` (when the provider requires the customer to complete the
+    /// first payment interactively) and, once the checkout completes, the
+    /// reusable `customer_id` and `payment_method_id` identifiers to persist
+    /// for later charges via [`FiatPaymentService::charge_subscription`].
+    ///
+    /// Providers that do not support subscriptions/off-session charges keep the
+    /// default implementation, which returns an `unsupported` error.
+    ///
+    /// # Arguments
+    ///
+    /// * `description` - A human-readable description of the order
+    /// * `amount` - The total amount to charge for the first period
+    /// * `customer_email` - Optional email used to create/attach the customer
+    /// * `line_items` - Optional detailed breakdown of items being purchased
+    fn create_subscription(
+        &self,
+        description: &str,
+        amount: CurrencyAmount,
+        customer_email: Option<String>,
+        line_items: Option<Vec<LineItem>>,
+    ) -> Pin<Box<dyn Future<Output = Result<SubscriptionPaymentInfo>> + Send>> {
+        let _ = (description, amount, customer_email, line_items);
+        Box::pin(async { Err(anyhow!("Subscriptions are not supported by this provider")) })
+    }
+
+    /// Charge an existing subscription off-session (merchant initiated),
+    /// without any customer interaction, using a previously-saved payment
+    /// method.
+    ///
+    /// Providers that do not support subscriptions/off-session charges keep the
+    /// default implementation, which returns an `unsupported` error.
+    ///
+    /// # Arguments
+    ///
+    /// * `customer_id` - The provider customer ID that owns the payment method
+    /// * `payment_method_id` - The saved payment method ID to charge
+    /// * `amount` - The amount to charge
+    /// * `description` - A human-readable description of the order
+    fn charge_subscription(
+        &self,
+        customer_id: &str,
+        payment_method_id: &str,
+        amount: CurrencyAmount,
+        description: &str,
+    ) -> Pin<Box<dyn Future<Output = Result<FiatPaymentInfo>> + Send>> {
+        let _ = (customer_id, payment_method_id, amount, description);
+        Box::pin(async { Err(anyhow!("Subscriptions are not supported by this provider")) })
+    }
 }
 
 /// Information about a created fiat payment.
@@ -115,6 +169,27 @@ pub trait FiatPaymentService: Send + Sync {
 pub struct FiatPaymentInfo {
     /// External payment ID from the provider
     pub external_id: String,
+    /// Raw JSON response from the provider
+    pub raw_data: String,
+}
+
+/// Information about a created subscription / savable order.
+///
+/// This is a provider-agnostic view: `customer_id` and `payment_method_id` are
+/// only populated once the initial checkout has completed and the provider has
+/// attached a reusable payment method. They may be `None` immediately after the
+/// order is created (before the customer completes the hosted checkout).
+#[derive(Debug, Clone)]
+pub struct SubscriptionPaymentInfo {
+    /// External order/payment ID from the provider
+    pub external_id: String,
+    /// Provider customer ID owning the saved payment method (once known)
+    pub customer_id: Option<String>,
+    /// Saved payment method ID for future off-session charges (once known)
+    pub payment_method_id: Option<String>,
+    /// Hosted checkout URL the customer completes to authorise the first
+    /// payment and save their method (when required by the provider)
+    pub checkout_url: Option<String>,
     /// Raw JSON response from the provider
     pub raw_data: String,
 }
@@ -198,5 +273,22 @@ mod tests {
         };
         let debug_str = format!("{:?}", info);
         assert!(debug_str.contains("ext_123"));
+    }
+
+    #[test]
+    fn test_subscription_payment_info_clone_debug() {
+        let info = SubscriptionPaymentInfo {
+            external_id: "order_1".to_string(),
+            customer_id: Some("cust_1".to_string()),
+            payment_method_id: Some("pm_1".to_string()),
+            checkout_url: Some("https://checkout".to_string()),
+            raw_data: r#"{"id":"order_1"}"#.to_string(),
+        };
+        let cloned = info.clone();
+        assert_eq!(cloned.external_id, "order_1");
+        assert_eq!(cloned.customer_id.as_deref(), Some("cust_1"));
+        assert_eq!(cloned.payment_method_id.as_deref(), Some("pm_1"));
+        let debug_str = format!("{:?}", info);
+        assert!(debug_str.contains("order_1"));
     }
 }
