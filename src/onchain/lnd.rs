@@ -143,6 +143,7 @@ fn transaction_to_updates(tx: &Transaction, min_confirmations: u32) -> Vec<Chain
                 ChainPaymentUpdate::Confirmed {
                     address: o.address.clone(),
                     txid: tx.tx_hash.clone(),
+                    vout: o.output_index.max(0) as u32,
                     amount_msat,
                     confirmations,
                     label: None,
@@ -151,6 +152,7 @@ fn transaction_to_updates(tx: &Transaction, min_confirmations: u32) -> Vec<Chain
                 ChainPaymentUpdate::Detected {
                     address: o.address.clone(),
                     txid: tx.tx_hash.clone(),
+                    vout: o.output_index.max(0) as u32,
                     amount_msat,
                     confirmations,
                     label: None,
@@ -318,11 +320,33 @@ mod tests {
             ChainPaymentUpdate::Detected {
                 address: "bc1qaddr".to_string(),
                 txid: "txid1".to_string(),
+                vout: 0,
                 amount_msat: 100_000_000,
                 confirmations: 0,
                 label: None,
             }
         );
+    }
+
+    #[test]
+    fn test_transaction_to_updates_vout_per_output() {
+        // One tx paying two of our addresses: each update carries the
+        // originating output index so callers can key deposits by txid:vout.
+        let mut o1 = output("bc1qaddr1", 100_000, true);
+        o1.output_index = 0;
+        let mut o2 = output("bc1qaddr2", 200_000, true);
+        o2.output_index = 2;
+        let t = tx("txid3", 3, vec![o1, o2]);
+        let updates = transaction_to_updates(&t, 1);
+        assert_eq!(updates.len(), 2);
+        let vouts: Vec<u32> = updates
+            .iter()
+            .map(|u| match u {
+                ChainPaymentUpdate::Confirmed { vout, .. } => *vout,
+                other => panic!("expected Confirmed, got {:?}", other),
+            })
+            .collect();
+        assert_eq!(vouts, vec![0, 2]);
     }
 
     #[test]
@@ -334,6 +358,7 @@ mod tests {
             ChainPaymentUpdate::Confirmed {
                 address: "bc1qaddr".to_string(),
                 txid: "txid2".to_string(),
+                vout: 0,
                 amount_msat: 50_000_000,
                 confirmations: 3,
                 label: None,

@@ -192,6 +192,8 @@ pub enum ChainPaymentUpdate {
         address: String,
         /// Transaction id (hex).
         txid: String,
+        /// Index of the output paying `address` within the transaction.
+        vout: u32,
         /// Actual amount received in milli-satoshis.
         amount_msat: u64,
         /// Number of confirmations observed so far.
@@ -207,6 +209,8 @@ pub enum ChainPaymentUpdate {
         address: String,
         /// Transaction id (hex).
         txid: String,
+        /// Index of the output paying `address` within the transaction.
+        vout: u32,
         /// Actual amount received in milli-satoshis.
         amount_msat: u64,
         /// Number of confirmations observed.
@@ -305,6 +309,7 @@ mod tests {
         let update = ChainPaymentUpdate::Detected {
             address: "bc1qaddr".to_string(),
             txid: "deadbeef".to_string(),
+            vout: 0,
             amount_msat: 100_000_000,
             confirmations: 0,
             label: Some("order-1".to_string()),
@@ -314,6 +319,7 @@ mod tests {
         if let ChainPaymentUpdate::Detected {
             address,
             txid,
+            vout,
             amount_msat,
             confirmations,
             label,
@@ -321,6 +327,7 @@ mod tests {
         {
             assert_eq!(address, "bc1qaddr");
             assert_eq!(txid, "deadbeef");
+            assert_eq!(vout, 0);
             assert_eq!(amount_msat, 100_000_000);
             assert_eq!(confirmations, 0);
             assert_eq!(label, Some("order-1".to_string()));
@@ -334,6 +341,7 @@ mod tests {
         let update = ChainPaymentUpdate::Confirmed {
             address: "bc1qaddr".to_string(),
             txid: "cafebabe".to_string(),
+            vout: 1,
             amount_msat: 50_000_000,
             confirmations: 3,
             label: None,
