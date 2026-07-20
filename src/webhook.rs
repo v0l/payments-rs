@@ -25,8 +25,6 @@
 //! ```
 
 use log::warn;
-use std::collections::HashMap;
-use std::sync::LazyLock;
 #[cfg(feature = "rocket")]
 use rocket::Data;
 #[cfg(feature = "rocket")]
@@ -35,12 +33,39 @@ use rocket::data::FromData;
 use rocket::data::ToByteUnit;
 #[cfg(feature = "rocket")]
 use rocket::http::Status;
+use std::collections::HashMap;
+use std::sync::LazyLock;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::broadcast;
 
 /// Global webhook message bridge.
 ///
 /// Use this to route incoming webhook HTTP requests to payment provider handlers.
 pub static WEBHOOK_BRIDGE: LazyLock<WebhookBridge> = LazyLock::new(WebhookBridge::new);
+
+/// Verify that a webhook event timestamp is within `tolerance` of the current
+/// time, providing replay protection for signed webhooks.
+///
+/// `event_unix_secs` is the event timestamp in **seconds** since the Unix epoch.
+/// Returns an error if the timestamp is further than `tolerance` from now (in
+/// either direction).
+pub(crate) fn verify_timestamp_within(
+    event_unix_secs: i64,
+    tolerance: Duration,
+) -> anyhow::Result<()> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|e| anyhow::anyhow!("System clock is before the Unix epoch: {e}"))?
+        .as_secs() as i64;
+    let age = now.abs_diff(event_unix_secs);
+    anyhow::ensure!(
+        age <= tolerance.as_secs(),
+        "Webhook timestamp outside tolerance: {}s away (max {}s)",
+        age,
+        tolerance.as_secs()
+    );
+    Ok(())
+}
 
 /// A webhook message received from a payment provider.
 #[derive(Debug, Clone)]
@@ -182,5 +207,41 @@ mod tests {
     fn test_global_webhook_bridge() {
         // Test that WEBHOOK_BRIDGE static works
         let _rx = WEBHOOK_BRIDGE.listen();
+    }
+
+    #[test]
+    fn test_verify_timestamp_within_now_ok() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        assert!(verify_timestamp_within(now, Duration::from_secs(300)).is_ok());
+    }
+
+    #[test]
+    fn test_verify_timestamp_within_old_rejected() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let old = now - 3600;
+        let result = verify_timestamp_within(old, Duration::from_secs(300));
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("outside tolerance")
+        );
+    }
+
+    #[test]
+    fn test_verify_timestamp_within_future_rejected() {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
+        let future = now + 3600;
+        assert!(verify_timestamp_within(future, Duration::from_secs(300)).is_err());
     }
 }

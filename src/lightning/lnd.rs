@@ -45,7 +45,7 @@ pub fn setup_crypto_provider() {
             let provider = rustls::crypto::ring::default_provider();
             #[cfg(all(feature = "tls-aws", not(feature = "tls-ring")))]
             let provider = rustls::crypto::aws_lc_rs::default_provider();
-            
+
             let _ = provider.install_default();
         }
     });
@@ -101,13 +101,15 @@ impl LndNode {
     /// You must call [`setup_crypto_provider`] before creating connections.
     #[cfg_attr(coverage_nightly, coverage(off))]
     pub async fn new(url: &str, cert: &Path, macaroon: &Path) -> Result<Self> {
-        let lnd = connect(
-            url.to_string(),
-            cert.to_str().unwrap(),
-            macaroon.to_str().unwrap(),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
+        let cert = cert
+            .to_str()
+            .ok_or_else(|| anyhow!("cert path is not valid UTF-8"))?;
+        let macaroon = macaroon
+            .to_str()
+            .ok_or_else(|| anyhow!("macaroon path is not valid UTF-8"))?;
+        let lnd = connect(url.to_string(), cert, macaroon)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
 
         Ok(Self { client: lnd })
     }
@@ -170,7 +172,7 @@ impl LightningNode for LndNode {
         }
 
         let payment = final_result.ok_or_else(|| anyhow!("No payment result received"))?;
-        
+
         if payment.status != 2 {
             // 2 = SUCCEEDED
             let failure_reason = if !payment.failure_reason().as_str_name().is_empty() {

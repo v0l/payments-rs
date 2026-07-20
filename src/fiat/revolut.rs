@@ -1,7 +1,7 @@
 use crate::currency::{Currency, CurrencyAmount};
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem, SubscriptionPaymentInfo};
 use crate::json_api::{JsonApi, TokenGen};
-use crate::webhook::WebhookMessage;
+use crate::webhook::{WebhookMessage, verify_timestamp_within};
 use anyhow::{Context, Result, anyhow, bail};
 use chrono::{DateTime, Utc};
 use hmac::{Hmac, Mac};
@@ -128,17 +128,18 @@ impl RevolutApi {
                 .into_iter()
                 .map(|item| {
                     let total = item.total_amount();
-                    
+
                     // Build taxes array if tax info is provided
-                    let taxes = if let (Some(tax_amt), Some(tax_name)) = (item.tax_amount, item.tax_name) {
-                        Some(vec![RevolutTax {
-                            name: tax_name,
-                            amount: tax_amt,
-                        }])
-                    } else {
-                        None
-                    };
-                    
+                    let taxes =
+                        if let (Some(tax_amt), Some(tax_name)) = (item.tax_amount, item.tax_name) {
+                            Some(vec![RevolutTax {
+                                name: tax_name,
+                                amount: tax_amt,
+                            }])
+                        } else {
+                            None
+                        };
+
                     RevolutLineItem {
                         name: item.name,
                         description: item.description,
@@ -257,10 +258,15 @@ impl RevolutApi {
     ) -> Result<Vec<RevolutSavedPaymentMethod>> {
         let all: Vec<RevolutSavedPaymentMethod> = self
             .api
-            .get(&format!("/api/1.0/customers/{}/payment-methods", customer_id))
+            .get(&format!(
+                "/api/1.0/customers/{}/payment-methods",
+                customer_id
+            ))
             .await?;
         Ok(if only_merchant {
-            all.into_iter().filter(|pm| pm.is_merchant_initiated()).collect()
+            all.into_iter()
+                .filter(|pm| pm.is_merchant_initiated())
+                .collect()
         } else {
             all
         })
@@ -379,7 +385,7 @@ pub struct CreateOrderRequest {
 
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_items: Option<Vec<RevolutLineItem>>,
 
@@ -459,32 +465,32 @@ impl RevolutSavedPaymentMethodType {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct RevolutLineItem {
     pub name: String,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    
+
     #[serde(rename = "type")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub item_type: Option<RevolutLineItemType>,
-    
+
     pub quantity: RevolutQuantity,
-    
+
     pub unit_price_amount: u64,
-    
+
     pub total_amount: u64,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub external_id: Option<String>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub discounts: Option<Vec<RevolutDiscount>>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub taxes: Option<Vec<RevolutTax>>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub image_urls: Option<Vec<String>>,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
 }
@@ -500,7 +506,7 @@ pub enum RevolutLineItemType {
 #[derive(Clone, Serialize, Deserialize, Debug)]
 pub struct RevolutQuantity {
     pub value: u64,
-    
+
     #[serde(skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
 }
@@ -529,13 +535,36 @@ impl RevolutLineItem {
                 unit: None,
             },
             unit_price_amount,
-            total_amount: quantity * unit_price_amount,
+            total_amount: quantity.saturating_mul(unit_price_amount),
             external_id: None,
             discounts: None,
             taxes: None,
             image_urls: None,
             url: None,
         }
+    }
+
+    /// Recompute `total_amount` from the current quantity, unit price, discounts
+    /// and taxes.
+    ///
+    /// `total = quantity * unit_price - sum(discounts) + sum(taxes)`, computed
+    /// with saturating arithmetic. This keeps the total consistent regardless of
+    /// the order in which the builder methods are applied.
+    fn recalculate_total(&mut self) {
+        let base = self.quantity.value.saturating_mul(self.unit_price_amount);
+        let discount_total: u64 = self
+            .discounts
+            .as_ref()
+            .map(|d| d.iter().map(|x| x.amount).sum())
+            .unwrap_or(0);
+        let tax_total: u64 = self
+            .taxes
+            .as_ref()
+            .map(|t| t.iter().map(|x| x.amount).sum())
+            .unwrap_or(0);
+        self.total_amount = base
+            .saturating_sub(discount_total)
+            .saturating_add(tax_total);
     }
 
     /// Builder-style method to set the item type
@@ -556,20 +585,23 @@ impl RevolutLineItem {
         self
     }
 
-    /// Builder-style method to add discounts
+    /// Builder-style method to add discounts.
+    ///
+    /// The total is recomputed from all components, so this is safe to combine
+    /// with [`RevolutLineItem::with_taxes`] in any order.
     pub fn with_discounts(mut self, discounts: Vec<RevolutDiscount>) -> Self {
-        // Recalculate total with discounts
-        let discount_total: u64 = discounts.iter().map(|d| d.amount).sum();
-        self.total_amount = (self.quantity.value * self.unit_price_amount).saturating_sub(discount_total);
         self.discounts = Some(discounts);
+        self.recalculate_total();
         self
     }
 
-    /// Builder-style method to add taxes
+    /// Builder-style method to add taxes.
+    ///
+    /// The total is recomputed from all components, so this is safe to combine
+    /// with [`RevolutLineItem::with_discounts`] in any order.
     pub fn with_taxes(mut self, taxes: Vec<RevolutTax>) -> Self {
-        let tax_total: u64 = taxes.iter().map(|t| t.amount).sum();
-        self.total_amount += tax_total;
         self.taxes = Some(taxes);
+        self.recalculate_total();
         self
     }
 
@@ -830,7 +862,30 @@ pub struct RevolutWebhookBody {
 
 type HmacSha256 = Hmac<sha2::Sha256>;
 impl RevolutWebhookBody {
+    /// Default tolerance for webhook timestamp replay protection (5 minutes).
+    pub const DEFAULT_TOLERANCE: std::time::Duration = std::time::Duration::from_secs(300);
+
+    /// Verify and parse a Revolut webhook event.
+    ///
+    /// This checks the HMAC signature in constant time and rejects events whose
+    /// timestamp is outside [`RevolutWebhookBody::DEFAULT_TOLERANCE`] of the
+    /// current time (replay protection). Use
+    /// [`RevolutWebhookBody::verify_with_tolerance`] to customise or disable the
+    /// timestamp check.
     pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<Self> {
+        Self::verify_with_tolerance(secret, msg, Some(Self::DEFAULT_TOLERANCE))
+    }
+
+    /// Verify and parse a Revolut webhook event with a configurable timestamp
+    /// tolerance.
+    ///
+    /// Pass `Some(tolerance)` to enable replay protection, or `None` to skip the
+    /// timestamp check entirely (not recommended in production).
+    pub fn verify_with_tolerance(
+        secret: &str,
+        msg: &WebhookMessage,
+        tolerance: Option<std::time::Duration>,
+    ) -> Result<Self> {
         let sig = msg
             .headers
             .get("revolut-signature")
@@ -840,34 +895,48 @@ impl RevolutWebhookBody {
             .get("revolut-request-timestamp")
             .ok_or_else(|| anyhow!("Missing Revolut-Request-Timestamp header"))?;
 
-        // check if any signatures match
+        // check if any signatures match (constant-time comparison)
+        let mut verified = false;
         for sig in sig.split(",") {
             let mut sig_split = sig.split("=");
             let (version, code) = (
                 sig_split.next().context("Invalid signature format")?,
                 sig_split.next().context("Invalid signature format")?,
             );
-            let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
+            let Ok(expected) = hex::decode(code) else {
+                warn!("Invalid signature encoding: {}", code);
+                continue;
+            };
+            // HMAC accepts keys of any length, so `new_from_slice` cannot fail.
+            let mut mac =
+                HmacSha256::new_from_slice(secret.as_bytes()).expect("HMAC accepts any key length");
             mac.update(version.as_bytes());
             mac.update(b".");
             mac.update(timestamp.as_bytes());
             mac.update(b".");
             mac.update(msg.body.as_slice());
-            let result = mac.finalize().into_bytes();
-
-            if hex::encode(result) == code {
-                let inner: RevolutWebhookBody = serde_json::from_slice(&msg.body)?;
-                return Ok(inner);
-            } else {
-                warn!(
-                    "Invalid signature found {} != {}",
-                    code,
-                    hex::encode(result)
-                );
+            if mac.verify_slice(&expected).is_ok() {
+                verified = true;
+                break;
             }
+            warn!("Invalid signature found for version {}", version);
         }
 
-        bail!("No valid signature found!");
+        if !verified {
+            bail!("No valid signature found!");
+        }
+
+        // Replay protection: the Revolut timestamp is in milliseconds since the
+        // epoch.
+        if let Some(tolerance) = tolerance {
+            let ts_ms: i64 = timestamp
+                .parse()
+                .context("Invalid Revolut-Request-Timestamp header")?;
+            verify_timestamp_within(ts_ms / 1000, tolerance)?;
+        }
+
+        let inner: RevolutWebhookBody = serde_json::from_slice(&msg.body)?;
+        Ok(inner)
     }
 }
 
@@ -892,7 +961,12 @@ mod tests {
     use hmac::Mac;
     use std::collections::HashMap;
 
-    fn create_revolut_signature(secret: &str, version: &str, timestamp: &str, body: &[u8]) -> String {
+    fn create_revolut_signature(
+        secret: &str,
+        version: &str,
+        timestamp: &str,
+        body: &[u8],
+    ) -> String {
         let mut mac = HmacSha256::new_from_slice(secret.as_bytes()).unwrap();
         mac.update(version.as_bytes());
         mac.update(b".");
@@ -903,20 +977,28 @@ mod tests {
         format!("{}={}", version, hex::encode(result))
     }
 
+    fn now_millis() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64
+    }
+
     #[test]
     fn test_revolut_webhook_verify_valid() {
         let secret = "test_secret";
-        let timestamp = "1234567890";
-        let body = r#"{"event":"ORDER_COMPLETED","order_id":"order_123","merchant_order_ext_ref":null}"#;
+        let timestamp = now_millis().to_string();
+        let body =
+            r#"{"event":"ORDER_COMPLETED","order_id":"order_123","merchant_order_ext_ref":null}"#;
 
-        let signature = create_revolut_signature(secret, "v1", timestamp, body.as_bytes());
+        let signature = create_revolut_signature(secret, "v1", &timestamp, body.as_bytes());
 
         let msg = WebhookMessage {
             endpoint: "/webhooks/revolut".to_string(),
             body: body.as_bytes().to_vec(),
             headers: HashMap::from([
                 ("revolut-signature".to_string(), signature),
-                ("revolut-request-timestamp".to_string(), timestamp.to_string()),
+                ("revolut-request-timestamp".to_string(), timestamp),
             ]),
         };
 
@@ -928,18 +1010,75 @@ mod tests {
     }
 
     #[test]
+    fn test_revolut_webhook_verify_expired_timestamp_rejected() {
+        // Regression: a validly-signed but old event must be rejected by the
+        // default replay-protection window.
+        let secret = "test_secret";
+        let timestamp = (now_millis() - 3_600_000).to_string();
+        let body = r#"{"event":"ORDER_COMPLETED","order_id":"order_123"}"#;
+
+        let signature = create_revolut_signature(secret, "v1", &timestamp, body.as_bytes());
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([
+                ("revolut-signature".to_string(), signature),
+                ("revolut-request-timestamp".to_string(), timestamp),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify(secret, &msg);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("outside tolerance")
+        );
+    }
+
+    #[test]
+    fn test_revolut_webhook_verify_no_tolerance_allows_old() {
+        let secret = "test_secret";
+        let timestamp = "1234567890";
+        let body = r#"{"event":"ORDER_COMPLETED","order_id":"order_123"}"#;
+
+        let signature = create_revolut_signature(secret, "v1", timestamp, body.as_bytes());
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/revolut".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([
+                ("revolut-signature".to_string(), signature),
+                (
+                    "revolut-request-timestamp".to_string(),
+                    timestamp.to_string(),
+                ),
+            ]),
+        };
+
+        let result = RevolutWebhookBody::verify_with_tolerance(secret, &msg, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_revolut_webhook_verify_missing_signature() {
         let msg = WebhookMessage {
             endpoint: "/webhooks/revolut".to_string(),
             body: b"{}".to_vec(),
-            headers: HashMap::from([
-                ("revolut-request-timestamp".to_string(), "1234567890".to_string()),
-            ]),
+            headers: HashMap::from([(
+                "revolut-request-timestamp".to_string(),
+                "1234567890".to_string(),
+            )]),
         };
 
         let result = RevolutWebhookBody::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing Revolut-Signature"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing Revolut-Signature")
+        );
     }
 
     #[test]
@@ -947,14 +1086,17 @@ mod tests {
         let msg = WebhookMessage {
             endpoint: "/webhooks/revolut".to_string(),
             body: b"{}".to_vec(),
-            headers: HashMap::from([
-                ("revolut-signature".to_string(), "v1=abc123".to_string()),
-            ]),
+            headers: HashMap::from([("revolut-signature".to_string(), "v1=abc123".to_string())]),
         };
 
         let result = RevolutWebhookBody::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing Revolut-Request-Timestamp"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing Revolut-Request-Timestamp")
+        );
     }
 
     #[test]
@@ -963,14 +1105,25 @@ mod tests {
             endpoint: "/webhooks/revolut".to_string(),
             body: r#"{"event":"ORDER_COMPLETED","order_id":"123"}"#.as_bytes().to_vec(),
             headers: HashMap::from([
-                ("revolut-signature".to_string(), "v1=invalid_signature".to_string()),
-                ("revolut-request-timestamp".to_string(), "1234567890".to_string()),
+                (
+                    "revolut-signature".to_string(),
+                    "v1=invalid_signature".to_string(),
+                ),
+                (
+                    "revolut-request-timestamp".to_string(),
+                    "1234567890".to_string(),
+                ),
             ]),
         };
 
         let result = RevolutWebhookBody::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No valid signature found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No valid signature found")
+        );
     }
 
     #[test]
@@ -1022,29 +1175,55 @@ mod tests {
 
     #[test]
     fn test_revolut_line_item_with_unit() {
-        let item = RevolutLineItem::simple("Test".to_string(), 1, 100)
-            .with_unit("kg".to_string());
+        let item = RevolutLineItem::simple("Test".to_string(), 1, 100).with_unit("kg".to_string());
         assert_eq!(item.quantity.unit, Some("kg".to_string()));
     }
 
     #[test]
     fn test_revolut_line_item_with_discounts() {
-        let item = RevolutLineItem::simple("Test".to_string(), 2, 100)
-            .with_discounts(vec![RevolutDiscount {
+        let item = RevolutLineItem::simple("Test".to_string(), 2, 100).with_discounts(vec![
+            RevolutDiscount {
                 name: "10% off".to_string(),
                 amount: 20,
-            }]);
+            },
+        ]);
         assert_eq!(item.total_amount, 180); // 200 - 20
     }
 
     #[test]
     fn test_revolut_line_item_with_taxes() {
-        let item = RevolutLineItem::simple("Test".to_string(), 2, 100)
-            .with_taxes(vec![RevolutTax {
+        let item =
+            RevolutLineItem::simple("Test".to_string(), 2, 100).with_taxes(vec![RevolutTax {
                 name: "VAT".to_string(),
                 amount: 40,
             }]);
         assert_eq!(item.total_amount, 240); // 200 + 40
+    }
+
+    #[test]
+    fn test_revolut_line_item_discounts_and_taxes_order_independent() {
+        // Regression: applying discounts then taxes (or vice versa) must yield
+        // the same total. Previously `with_discounts` recomputed from the base
+        // and discarded any taxes already applied.
+        let discounts = vec![RevolutDiscount {
+            name: "10% off".to_string(),
+            amount: 20,
+        }];
+        let taxes = vec![RevolutTax {
+            name: "VAT".to_string(),
+            amount: 40,
+        }];
+
+        let a = RevolutLineItem::simple("Test".to_string(), 2, 100)
+            .with_discounts(discounts.clone())
+            .with_taxes(taxes.clone());
+        let b = RevolutLineItem::simple("Test".to_string(), 2, 100)
+            .with_taxes(taxes)
+            .with_discounts(discounts);
+
+        // 200 base - 20 discount + 40 tax = 220
+        assert_eq!(a.total_amount, 220);
+        assert_eq!(b.total_amount, 220);
     }
 
     #[test]
@@ -1227,11 +1406,20 @@ mod tests {
         assert_eq!(methods.len(), 3);
         assert_eq!(methods[0].id, "pm_merchant");
         assert_eq!(
-            methods[0].method_details.as_ref().and_then(|d| d.last4.as_deref()),
+            methods[0]
+                .method_details
+                .as_ref()
+                .and_then(|d| d.last4.as_deref()),
             Some("5709")
         );
-        assert!(matches!(methods[0].kind, RevolutSavedPaymentMethodType::Card));
-        assert!(matches!(methods[2].kind, RevolutSavedPaymentMethodType::RevolutPay));
+        assert!(matches!(
+            methods[0].kind,
+            RevolutSavedPaymentMethodType::Card
+        ));
+        assert!(matches!(
+            methods[2].kind,
+            RevolutSavedPaymentMethodType::RevolutPay
+        ));
         assert!(methods[0].is_merchant_initiated());
         assert!(!methods[1].is_merchant_initiated());
         assert!(!methods[2].is_merchant_initiated());

@@ -9,7 +9,10 @@
 #![allow(deprecated)]
 
 use crate::json_api::JsonApi;
-use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest, PayInvoiceResponse};
+use crate::lightning::{
+    AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest,
+    PayInvoiceResponse,
+};
 use crate::webhook::{WEBHOOK_BRIDGE, WebhookMessage};
 use anyhow::{anyhow, bail};
 use async_trait::async_trait;
@@ -45,13 +48,13 @@ impl BitvoraNode {
     /// * `api_token` - Your Bitvora API token
     /// * `webhook_secret` - Secret for verifying webhook signatures
     /// * `webhook_path` - The URL path where webhooks will be received
-    pub fn new(api_token: &str, webhook_secret: &str, webhook_path: &str) -> Self {
+    pub fn new(api_token: &str, webhook_secret: &str, webhook_path: &str) -> anyhow::Result<Self> {
         let auth = format!("Bearer {}", api_token);
-        Self {
-            api: JsonApi::token("https://api.bitvora.com/", &auth, false).unwrap(),
+        Ok(Self {
+            api: JsonApi::token("https://api.bitvora.com/", &auth, false)?,
             webhook_secret: webhook_secret.to_string(),
             webhook_path: webhook_path.to_string(),
-        }
+        })
     }
 }
 
@@ -76,7 +79,10 @@ impl LightningNode for BitvoraNode {
                 rsp.message.unwrap_or_default()
             );
         }
-        Ok(AddInvoiceResponse::from_invoice(&rsp.data.payment_request, Some(rsp.data.id))?)
+        Ok(AddInvoiceResponse::from_invoice(
+            &rsp.data.payment_request,
+            Some(rsp.data.id),
+        )?)
     }
 
     async fn cancel_invoice(&self, _id: &[u8]) -> anyhow::Result<()> {
@@ -100,9 +106,11 @@ impl LightningNode for BitvoraNode {
         }
 
         // Parse the invoice to get the payment hash
-        let parsed_invoice: Bolt11Invoice = req.invoice.parse()
+        let parsed_invoice: Bolt11Invoice = req
+            .invoice
+            .parse()
             .map_err(|e| anyhow!("Failed to parse invoice: {}", e))?;
-        
+
         Ok(PayInvoiceResponse {
             payment_hash: parsed_invoice.payment_hash().encode_hex(),
             payment_preimage: rsp.data.preimage,
@@ -234,16 +242,15 @@ fn verify_webhook(secret: &str, msg: &WebhookMessage) -> anyhow::Result<()> {
         .get("bitvora-signature")
         .ok_or_else(|| anyhow!("Missing bitvora-signature header"))?;
 
+    let expected = hex::decode(sig).map_err(|_| anyhow!("Invalid signature encoding"))?;
     let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
     mac.update(msg.body.as_slice());
-    let result = mac.finalize().into_bytes();
 
-    if hex::encode(result) == *sig {
+    if mac.verify_slice(&expected).is_ok() {
         return Ok(());
-    } else {
-        warn!("Invalid signature found {} != {}", sig, hex::encode(result));
     }
 
+    warn!("Invalid signature found for webhook");
     bail!("No valid signature found!");
 }
 
@@ -262,7 +269,7 @@ mod tests {
 
     #[test]
     fn test_bitvora_node_new() {
-        let node = BitvoraNode::new("test_token", "webhook_secret", "/webhooks/bitvora");
+        let node = BitvoraNode::new("test_token", "webhook_secret", "/webhooks/bitvora").unwrap();
         assert_eq!(node.webhook_secret, "webhook_secret");
         assert_eq!(node.webhook_path, "/webhooks/bitvora");
     }
@@ -293,7 +300,12 @@ mod tests {
 
         let result = verify_webhook("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing bitvora-signature"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing bitvora-signature")
+        );
     }
 
     #[test]
@@ -301,19 +313,27 @@ mod tests {
         let msg = WebhookMessage {
             endpoint: "/webhooks/bitvora".to_string(),
             body: b"test".to_vec(),
-            headers: HashMap::from([("bitvora-signature".to_string(), "invalid".to_string())]),
+            headers: HashMap::from([("bitvora-signature".to_string(), "00".to_string())]),
         };
 
         let result = verify_webhook("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("No valid signature found"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("No valid signature found")
+        );
     }
 
     #[test]
     fn test_bitvora_webhook_event_serde() {
         let json = r#""deposit.lightning.completed""#;
         let event: BitvoraWebhookEvent = serde_json::from_str(json).unwrap();
-        assert!(matches!(event, BitvoraWebhookEvent::DepositLightningComplete));
+        assert!(matches!(
+            event,
+            BitvoraWebhookEvent::DepositLightningComplete
+        ));
 
         let json = r#""deposit.lightning.failed""#;
         let event: BitvoraWebhookEvent = serde_json::from_str(json).unwrap();

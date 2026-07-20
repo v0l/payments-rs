@@ -66,15 +66,19 @@ pub struct LineItem {
 }
 
 impl LineItem {
-    /// Calculate total amount for this line item (including tax)
+    /// Calculate total amount for this line item (including tax).
+    ///
+    /// Saturates at [`u64::MAX`] rather than overflowing.
     pub fn total_amount(&self) -> u64 {
-        let subtotal = self.unit_amount * self.quantity;
-        subtotal + self.tax_amount.unwrap_or(0)
+        self.subtotal_amount()
+            .saturating_add(self.tax_amount.unwrap_or(0))
     }
-    
-    /// Calculate subtotal amount (before tax)
+
+    /// Calculate subtotal amount (before tax).
+    ///
+    /// Saturates at [`u64::MAX`] rather than overflowing.
     pub fn subtotal_amount(&self) -> u64 {
-        self.unit_amount * self.quantity
+        self.unit_amount.saturating_mul(self.quantity)
     }
 }
 
@@ -245,6 +249,25 @@ mod tests {
         };
         assert_eq!(item.subtotal_amount(), 3000);
         assert_eq!(item.total_amount(), 3300);
+    }
+
+    #[test]
+    fn test_line_item_amounts_saturate_on_overflow() {
+        // Regression: previously `unit_amount * quantity` could panic (debug) or
+        // wrap (release). It must now saturate instead.
+        let item = LineItem {
+            name: "Overflow".to_string(),
+            description: None,
+            unit_amount: u64::MAX,
+            quantity: 2,
+            currency: "USD".to_string(),
+            images: None,
+            metadata: None,
+            tax_amount: Some(1000),
+            tax_name: None,
+        };
+        assert_eq!(item.subtotal_amount(), u64::MAX);
+        assert_eq!(item.total_amount(), u64::MAX);
     }
 
     #[test]

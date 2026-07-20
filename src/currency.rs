@@ -3,7 +3,7 @@
 //! This module provides types for representing currencies and monetary amounts
 //! in a type-safe manner.
 
-use anyhow::{ensure, Result};
+use anyhow::{Result, ensure};
 use std::fmt::{Display, Formatter};
 use std::ops::Sub;
 use std::str::FromStr;
@@ -258,10 +258,12 @@ mod tests {
         let b = CurrencyAmount::from_u64(Currency::USD, 2000);
         let result = a - b;
         assert!(result.is_err());
-        assert!(result
-            .unwrap_err()
-            .to_string()
-            .contains("Subtraction would underflow"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Subtraction would underflow")
+        );
     }
 
     #[test]

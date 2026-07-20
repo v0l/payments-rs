@@ -93,13 +93,15 @@ impl LndOnChainProvider {
         macaroon: &Path,
         config: LndOnChainConfig,
     ) -> Result<Self> {
-        let client = connect(
-            url.to_string(),
-            cert.to_str().unwrap(),
-            macaroon.to_str().unwrap(),
-        )
-        .await
-        .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
+        let cert = cert
+            .to_str()
+            .ok_or_else(|| anyhow!("cert path is not valid UTF-8"))?;
+        let macaroon = macaroon
+            .to_str()
+            .ok_or_else(|| anyhow!("macaroon path is not valid UTF-8"))?;
+        let client = connect(url.to_string(), cert, macaroon)
+            .await
+            .map_err(|e| anyhow!("Failed to connect to LND: {}", e))?;
 
         Ok(Self { client, config })
     }

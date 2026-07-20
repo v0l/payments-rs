@@ -1,7 +1,9 @@
 use crate::USER_AGENT;
 use anyhow::{Result, bail};
 use log::debug;
-use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT as USER_AGENT_HEADER};
+use reqwest::header::{
+    ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderMap, USER_AGENT as USER_AGENT_HEADER,
+};
 use reqwest::{Client, Method, Request, RequestBuilder, Url};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
@@ -265,7 +267,11 @@ mod tests {
         let api = JsonApi::token_gen("https://api.example.com", false, TestTokenGen).unwrap();
         let req = api.build_req(Method::GET, "/test", None::<()>).unwrap();
         assert_eq!(
-            req.headers().get("X-Custom-Token").unwrap().to_str().unwrap(),
+            req.headers()
+                .get("X-Custom-Token")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "test123"
         );
     }
@@ -276,7 +282,11 @@ mod tests {
         let body = serde_json::json!({"test": true});
         let req = api.build_req(Method::POST, "/test", Some(body)).unwrap();
         assert_eq!(
-            req.headers().get("X-Custom-Token").unwrap().to_str().unwrap(),
+            req.headers()
+                .get("X-Custom-Token")
+                .unwrap()
+                .to_str()
+                .unwrap(),
             "test123"
         );
     }

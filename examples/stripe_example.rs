@@ -1,10 +1,10 @@
-use std::env::args;
 use anyhow::Result;
 use payments_rs::currency::{Currency, CurrencyAmount};
 use payments_rs::fiat::{
     CheckoutLineItem, CreateCheckoutSessionRequest, FiatPaymentService, LineItem, PriceData,
     ProductData, StripeApi, StripeConfig,
 };
+use std::env::args;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -133,14 +133,22 @@ async fn main() -> Result<()> {
             tax_name: Some("10% VAT".to_string()),
         },
     ];
-    
+
     let total_amount = line_items.iter().map(|i| i.total_amount()).sum::<u64>();
     let amount_with_items = CurrencyAmount::from_u64(Currency::USD, total_amount);
-    
-    println!("Line items total (including tax): ${}.{:02}", total_amount / 100, total_amount % 100);
-    
+
+    println!(
+        "Line items total (including tax): ${}.{:02}",
+        total_amount / 100,
+        total_amount % 100
+    );
+
     let payment_with_items = stripe
-        .create_order("Order #12346 with line items", amount_with_items, Some(line_items))
+        .create_order(
+            "Order #12346 with line items",
+            amount_with_items,
+            Some(line_items),
+        )
         .await?;
     println!("Payment with line items: {:?}", payment_with_items);
 

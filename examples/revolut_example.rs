@@ -1,10 +1,10 @@
-use std::env::args;
 use anyhow::Result;
 use payments_rs::currency::{Currency, CurrencyAmount};
 use payments_rs::fiat::{
     LineItem, RevolutApi, RevolutConfig, RevolutDiscount, RevolutLineItem, RevolutLineItemType,
     RevolutTax,
 };
+use std::env::args;
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -61,11 +61,11 @@ async fn main() -> Result<()> {
     let total_amount = line_items.iter().map(|i| i.total_amount()).sum::<u64>();
     let subtotal = line_items.iter().map(|i| i.subtotal_amount()).sum::<u64>();
     let tax_total = total_amount - subtotal;
-    
+
     println!("Subtotal: £{}.{:02}", subtotal / 100, subtotal % 100);
     println!("Tax: £{}.{:02}", tax_total / 100, tax_total % 100);
     println!("Total: £{}.{:02}", total_amount / 100, total_amount % 100);
-    
+
     let amount_with_items = CurrencyAmount::from_u64(Currency::GBP, total_amount);
 
     let order_with_items = revolut
@@ -96,11 +96,13 @@ async fn main() -> Result<()> {
     println!("Webhooks: {:?}", webhooks);
 
     // Example 6: Advanced line items with Revolut-specific features
-    // Note: To use advanced features like discounts and taxes, you would need to 
+    // Note: To use advanced features like discounts and taxes, you would need to
     // create a wrapper method in RevolutApi or use the builder pattern directly
     println!("\nAdvanced Revolut line items example:");
-    println!("You can create line items with discounts, taxes, and more using RevolutLineItem::simple()");
-    
+    println!(
+        "You can create line items with discounts, taxes, and more using RevolutLineItem::simple()"
+    );
+
     let advanced_item = RevolutLineItem::simple("Example item".to_string(), 2, 100)
         .with_type(RevolutLineItemType::Physical)
         .with_unit("kg".to_string())
@@ -118,7 +120,10 @@ async fn main() -> Result<()> {
         .with_external_id("external_id_123".to_string());
 
     println!("Advanced line item created: {:?}", advanced_item);
-    println!("Total amount (with discounts and taxes): {}", advanced_item.total_amount);
+    println!(
+        "Total amount (with discounts and taxes): {}",
+        advanced_item.total_amount
+    );
 
     Ok(())
 }

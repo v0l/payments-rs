@@ -1,7 +1,7 @@
+use crate::USER_AGENT;
 use crate::currency::{Currency, CurrencyAmount};
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
-use crate::webhook::WebhookMessage;
-use crate::USER_AGENT;
+use crate::webhook::{WebhookMessage, verify_timestamp_within};
 use anyhow::{Context, Result, anyhow, bail};
 use hmac::{Hmac, Mac};
 use log::{debug, warn};
@@ -52,6 +52,8 @@ impl FormEncodedApi {
 
         let status = rsp.status();
         let text = rsp.text().await?;
+        // Response bodies may contain PII; only log them in debug builds.
+        #[cfg(debug_assertions)]
         debug!("<< {} {}", status, text);
 
         if status.is_success() {
@@ -68,7 +70,11 @@ impl FormEncodedApi {
     ) -> Result<T> {
         let url = self.base.join(path)?;
         let form_body = serde_html_form::to_string(&body)?;
+        // Request bodies may contain PII; only log them in debug builds.
+        #[cfg(debug_assertions)]
         debug!(">> POST {}: {}", url, form_body);
+        #[cfg(not(debug_assertions))]
+        debug!(">> POST {}", url);
 
         let rsp = self
             .client
@@ -81,6 +87,7 @@ impl FormEncodedApi {
 
         let status = rsp.status();
         let text = rsp.text().await?;
+        #[cfg(debug_assertions)]
         debug!("<< {} {}", status, text);
 
         if status.is_success() {
@@ -104,6 +111,7 @@ impl FormEncodedApi {
 
         let status = rsp.status();
         let text = rsp.text().await?;
+        #[cfg(debug_assertions)]
         debug!("<< {} {}", status, text);
 
         if status.is_success() {
@@ -126,6 +134,7 @@ impl FormEncodedApi {
 
         let status = rsp.status();
         let text = rsp.text().await?;
+        #[cfg(debug_assertions)]
         debug!("<< {} {}", status, text);
 
         if status.is_success() {
@@ -255,7 +264,12 @@ impl StripeApi {
             .await
     }
 
-    /// Create a payment intent (alternative to checkout sessions)
+    /// Create a payment intent (alternative to checkout sessions).
+    ///
+    /// The intent is created **unconfirmed** with automatic payment methods
+    /// enabled, starting in `requires_payment_method`. Use the returned
+    /// `client_secret` to collect a payment method and confirm the intent
+    /// client-side (e.g. with Stripe.js / a mobile SDK).
     pub async fn create_payment_intent(
         &self,
         amount: CurrencyAmount,
@@ -277,7 +291,12 @@ impl StripeApi {
                         "enabled".to_string(),
                         "true".to_string(),
                     )])),
-                    confirm: Some(true),
+                    // Create the intent unconfirmed: it starts in
+                    // `requires_payment_method` and returns a `client_secret`
+                    // for the client to attach a payment method and confirm.
+                    // Confirming server-side here (with no payment method
+                    // attached) would be rejected by Stripe.
+                    confirm: None,
                 },
             )
             .await
@@ -319,16 +338,18 @@ impl FiatPaymentService for StripeApi {
                         // Build product metadata with tax info if present
                         let mut metadata_map = serde_json::Map::new();
                         if let Some(tax_amt) = item.tax_amount {
-                            metadata_map.insert("tax_amount".to_string(), serde_json::json!(tax_amt));
+                            metadata_map
+                                .insert("tax_amount".to_string(), serde_json::json!(tax_amt));
                         }
                         if let Some(tax_name) = &item.tax_name {
-                            metadata_map.insert("tax_name".to_string(), serde_json::json!(tax_name));
+                            metadata_map
+                                .insert("tax_name".to_string(), serde_json::json!(tax_name));
                         }
                         // Merge with existing metadata if any
                         if let Some(serde_json::Value::Object(existing)) = item.metadata {
                             metadata_map.extend(existing);
                         }
-                        
+
                         let metadata = if metadata_map.is_empty() {
                             None
                         } else {
@@ -613,8 +634,30 @@ pub struct StripeEventData {
 type HmacSha256 = Hmac<sha2::Sha256>;
 
 impl StripeWebhookEvent {
-    /// Verify and parse a Stripe webhook event
+    /// Default tolerance for webhook timestamp replay protection (5 minutes).
+    pub const DEFAULT_TOLERANCE: Duration = Duration::from_secs(300);
+
+    /// Verify and parse a Stripe webhook event.
+    ///
+    /// This checks the HMAC signature in constant time and rejects events whose
+    /// timestamp is outside [`StripeWebhookEvent::DEFAULT_TOLERANCE`] of the
+    /// current time (replay protection). Use
+    /// [`StripeWebhookEvent::verify_with_tolerance`] to customise or disable the
+    /// timestamp check.
     pub fn verify(secret: &str, msg: &WebhookMessage) -> Result<Self> {
+        Self::verify_with_tolerance(secret, msg, Some(Self::DEFAULT_TOLERANCE))
+    }
+
+    /// Verify and parse a Stripe webhook event with a configurable timestamp
+    /// tolerance.
+    ///
+    /// Pass `Some(tolerance)` to enable replay protection, or `None` to skip the
+    /// timestamp check entirely (not recommended in production).
+    pub fn verify_with_tolerance(
+        secret: &str,
+        msg: &WebhookMessage,
+        tolerance: Option<Duration>,
+    ) -> Result<Self> {
         let sig_header = msg
             .headers
             .get("stripe-signature")
@@ -641,15 +684,28 @@ impl StripeWebhookEvent {
         // Construct the signed payload
         let signed_payload = format!("{}.{}", timestamp, String::from_utf8_lossy(&msg.body));
 
-        // Verify the signature
-        let mut mac = HmacSha256::new_from_slice(secret.as_bytes())?;
-        mac.update(signed_payload.as_bytes());
-        let result = mac.finalize().into_bytes();
-        let expected_sig = hex::encode(result);
+        // Verify the signature in constant time. HMAC accepts keys of any
+        // length, so `new_from_slice` cannot fail here.
+        let valid = signatures.iter().any(|sig| {
+            hex::decode(sig).is_ok_and(|expected| {
+                let mut mac = HmacSha256::new_from_slice(secret.as_bytes())
+                    .expect("HMAC accepts any key length");
+                mac.update(signed_payload.as_bytes());
+                mac.verify_slice(&expected).is_ok()
+            })
+        });
 
-        if !signatures.iter().any(|sig| *sig == expected_sig) {
+        if !valid {
             warn!("Invalid Stripe webhook signature");
             bail!("Invalid signature");
+        }
+
+        // Replay protection: the Stripe timestamp is in seconds since the epoch.
+        if let Some(tolerance) = tolerance {
+            let ts: i64 = timestamp
+                .parse()
+                .context("Invalid timestamp in Stripe signature")?;
+            verify_timestamp_within(ts, tolerance)?;
         }
 
         // Parse the event
@@ -671,13 +727,20 @@ mod tests {
         format!("t={},v1={}", timestamp, hex::encode(result))
     }
 
+    fn now_secs() -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64
+    }
+
     #[test]
     fn test_stripe_webhook_verify_valid() {
         let secret = "whsec_test_secret";
-        let timestamp = "1234567890";
+        let timestamp = now_secs().to_string();
         let body = r#"{"id":"evt_123","type":"payment_intent.succeeded","data":{"object":{}}}"#;
 
-        let signature = create_stripe_signature(secret, timestamp, body.as_bytes());
+        let signature = create_stripe_signature(secret, &timestamp, body.as_bytes());
 
         let msg = WebhookMessage {
             endpoint: "/webhooks/stripe".to_string(),
@@ -693,6 +756,49 @@ mod tests {
     }
 
     #[test]
+    fn test_stripe_webhook_verify_expired_timestamp_rejected() {
+        // Regression: a validly-signed but old event must be rejected by the
+        // default replay-protection window.
+        let secret = "whsec_test_secret";
+        let timestamp = (now_secs() - 3600).to_string();
+        let body = r#"{"id":"evt_123","type":"payment_intent.succeeded","data":{"object":{}}}"#;
+
+        let signature = create_stripe_signature(secret, &timestamp, body.as_bytes());
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([("stripe-signature".to_string(), signature)]),
+        };
+
+        let result = StripeWebhookEvent::verify(secret, &msg);
+        assert!(result.is_err());
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("outside tolerance")
+        );
+    }
+
+    #[test]
+    fn test_stripe_webhook_verify_no_tolerance_allows_old() {
+        // Signature is valid; with tolerance disabled an old timestamp passes.
+        let secret = "whsec_test_secret";
+        let timestamp = "1234567890";
+        let body = r#"{"id":"evt_123","type":"payment_intent.succeeded","data":{"object":{}}}"#;
+
+        let signature = create_stripe_signature(secret, timestamp, body.as_bytes());
+        let msg = WebhookMessage {
+            endpoint: "/webhooks/stripe".to_string(),
+            body: body.as_bytes().to_vec(),
+            headers: HashMap::from([("stripe-signature".to_string(), signature)]),
+        };
+
+        let result = StripeWebhookEvent::verify_with_tolerance(secret, &msg, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
     fn test_stripe_webhook_verify_missing_signature() {
         let msg = WebhookMessage {
             endpoint: "/webhooks/stripe".to_string(),
@@ -702,7 +808,12 @@ mod tests {
 
         let result = StripeWebhookEvent::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing Stripe-Signature"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing Stripe-Signature")
+        );
     }
 
     #[test]
@@ -719,7 +830,12 @@ mod tests {
 
         let result = StripeWebhookEvent::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid signature"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Invalid signature")
+        );
     }
 
     #[test]
@@ -727,15 +843,17 @@ mod tests {
         let msg = WebhookMessage {
             endpoint: "/webhooks/stripe".to_string(),
             body: b"{}".to_vec(),
-            headers: HashMap::from([(
-                "stripe-signature".to_string(),
-                "v1=abc123".to_string(),
-            )]),
+            headers: HashMap::from([("stripe-signature".to_string(), "v1=abc123".to_string())]),
         };
 
         let result = StripeWebhookEvent::verify("secret", &msg);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Missing timestamp"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Missing timestamp")
+        );
     }
 
     #[test]
@@ -755,8 +873,12 @@ mod tests {
         let json = serde_json::to_string(&status).unwrap();
         assert_eq!(json, r#""succeeded""#);
 
-        let parsed: StripePaymentIntentStatus = serde_json::from_str(r#""requires_payment_method""#).unwrap();
-        assert!(matches!(parsed, StripePaymentIntentStatus::RequiresPaymentMethod));
+        let parsed: StripePaymentIntentStatus =
+            serde_json::from_str(r#""requires_payment_method""#).unwrap();
+        assert!(matches!(
+            parsed,
+            StripePaymentIntentStatus::RequiresPaymentMethod
+        ));
     }
 
     #[test]
