@@ -104,6 +104,36 @@ let invoice = node.add_invoice(AddInvoiceRequest {
 | `webhook` | Webhook signature verification and message bridge |
 | `rocket` | Rocket web framework integration for webhooks |
 
+## Testing
+
+Unit tests run with no external services:
+
+```bash
+cargo test
+```
+
+### Integration tests (real regtest LND)
+
+The `tests/e2e_*.rs` suites exercise the real LND wire calls (lightning +
+on-chain) against a `bitcoind` + `lnd` regtest stack. They are `#[ignore]`d by
+default. To run them:
+
+```bash
+# 1. Start bitcoind + lnd on regtest, fund the wallet, copy LND credentials
+./scripts/e2e-up.sh
+
+# 2. Run the ignored integration tests
+export PAYMENTS_RS_E2E=1
+cargo test --test e2e_onchain --test e2e_lightning -- --ignored --nocapture
+
+# 3. Tear down
+docker compose -f docker-compose.e2e.yaml down -v
+```
+
+The on-chain test derives a receive address, broadcasts a deposit from
+`bitcoind`, mines a block, and asserts a `Confirmed` `ChainPaymentUpdate`
+carrying the real txid and the correct `amount_msat`.
+
 ## License
 
 MIT

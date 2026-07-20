@@ -1,0 +1,60 @@
+name: E2E Integration Tests
+
+# Runs the real regtest LND integration tests. These spin up bitcoind + lnd via
+# docker compose, so they only run on pushes to main (and on manual dispatch) to
+# keep PR feedback fast.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_LOG: info
+
+jobs:
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: e2e-${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            e2e-${{ runner.os }}-cargo-
+
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y protobuf-compiler
+
+      - name: Build integration tests
+        run: cargo test --no-run --test e2e_onchain --test e2e_lightning
+
+      - name: Start regtest stack (bitcoind + lnd)
+        run: ./scripts/e2e-up.sh
+
+      - name: Run E2E tests
+        env:
+          PAYMENTS_RS_E2E: "1"
+        run: cargo test --test e2e_onchain --test e2e_lightning -- --ignored --nocapture
+
+      - name: Dump container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.e2e.yaml logs --tail=100 || true
+
+      - name: Tear down stack
+        if: always()
+        run: docker compose -f docker-compose.e2e.yaml down -v || true

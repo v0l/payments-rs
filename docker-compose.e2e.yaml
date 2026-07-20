@@ -1,0 +1,74 @@
+# Regtest infrastructure for payments-rs integration tests.
+#
+# Brings up a bitcoind + lnd pair on regtest so the real LND wire calls
+# (lightning + on-chain) can be exercised end-to-end.
+#
+# Usage:
+#   ./scripts/e2e-up.sh        # start, fund, copy creds, print env
+#   PAYMENTS_RS_E2E=1 cargo test --test e2e_onchain -- --ignored
+#   docker compose -f docker-compose.e2e.yaml down -v
+volumes:
+  e2e-lnd:
+  e2e-bitcoind:
+
+services:
+  bitcoind:
+    image: btcpayserver/bitcoin:26.0
+    environment:
+      BITCOIN_NETWORK: regtest
+      BITCOIN_EXTRA_ARGS: |
+        rpcuser=polaruser
+        rpcpassword=polarpass
+        rpcallowip=0.0.0.0/0
+        rpcbind=0.0.0.0
+        server=1
+        listen=1
+        txindex=1
+        fallbackfee=0.00001
+        zmqpubrawblock=tcp://0.0.0.0:28332
+        zmqpubrawtx=tcp://0.0.0.0:28333
+    ports:
+      - "18443:18443"
+      - "28332:28332"
+      - "28333:28333"
+    volumes:
+      - "e2e-bitcoind:/home/bitcoin/.bitcoin"
+    healthcheck:
+      test: ["CMD", "bitcoin-cli", "-regtest", "-rpcuser=polaruser", "-rpcpassword=polarpass", "getblockchaininfo"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+
+  lnd:
+    image: lightninglabs/lnd:v0.18.5-beta
+    depends_on:
+      bitcoind:
+        condition: service_healthy
+    environment:
+      LND_ENVIRONMENT: regtest
+    command:
+      - lnd
+      - --noseedbackup
+      - --norest
+      - --debuglevel=info
+      - --bitcoin.active
+      - --bitcoin.regtest
+      - --bitcoin.node=bitcoind
+      - --bitcoind.rpchost=bitcoind:18443
+      - --bitcoind.rpcuser=polaruser
+      - --bitcoind.rpcpass=polarpass
+      - --bitcoind.zmqpubrawblock=tcp://bitcoind:28332
+      - --bitcoind.zmqpubrawtx=tcp://bitcoind:28333
+      - --rpclisten=0.0.0.0:10009
+      - --tlsextradomain=lnd
+      - --tlsextraip=0.0.0.0
+    ports:
+      - "10009:10009"
+    volumes:
+      - "e2e-lnd:/root/.lnd"
+    healthcheck:
+      test: ["CMD", "lncli", "--network=regtest", "getinfo"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 10s
