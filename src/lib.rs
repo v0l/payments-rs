@@ -8,7 +8,8 @@
 //! This library uses feature flags to enable only the payment methods you need:
 //!
 //! - `method-lnd` - LND (Lightning Network Daemon) integration
-//! - `method-bitvora` - Bitvora Lightning payment provider
+//! - `method-lnd-onchain` - LND on-chain (receive) Bitcoin payments
+//! - `method-bitvora` - Bitvora Lightning payment provider (**deprecated**, no longer operational)
 //! - `method-revolut` - Revolut merchant API integration
 //! - `method-stripe` - Stripe payment processing
 //!
@@ -32,11 +33,14 @@
 /// User-Agent string used for all HTTP requests.
 pub(crate) const USER_AGENT: &str = concat!("payments-rs/", env!("CARGO_PKG_VERSION"));
 
-#[cfg(feature = "fiat")]
+#[cfg(any(feature = "fiat", feature = "onchain"))]
 pub mod currency;
 
 #[cfg(feature = "lightning")]
 pub mod lightning;
+
+#[cfg(feature = "onchain")]
+pub mod onchain;
 
 #[cfg(feature = "json-api")]
 pub mod json_api;

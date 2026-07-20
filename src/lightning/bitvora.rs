@@ -1,7 +1,12 @@
 //! Bitvora Lightning payment provider integration.
 //!
+//! **Deprecated:** Bitvora is no longer operational. This module is retained only
+//! for backwards compatibility and will be removed in a future release. Use the
+//! LND backend ([`crate::lightning::LndNode`]) instead.
+//!
 //! This module requires network access to the Bitvora API and cannot be unit tested
 //! without external services. Coverage exclusions are applied accordingly.
+#![allow(deprecated)]
 
 use crate::json_api::JsonApi;
 use crate::lightning::{AddInvoiceRequest, AddInvoiceResponse, InvoiceUpdate, LightningNode, PayInvoiceRequest, PayInvoiceResponse};
@@ -20,6 +25,10 @@ use tokio_stream::wrappers::BroadcastStream;
 /// Bitvora Lightning payment node client.
 ///
 /// Provides integration with the Bitvora custodial Lightning API.
+#[deprecated(
+    since = "0.3.0",
+    note = "Bitvora is no longer operational; use the LND backend (LndNode) instead"
+)]
 #[derive(Clone)]
 pub struct BitvoraNode {
     api: JsonApi,

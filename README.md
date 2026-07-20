@@ -9,7 +9,8 @@ A Rust library for integrating with multiple payment providers, supporting both 
 | [Stripe](https://stripe.com) | Fiat | `method-stripe` |
 | [Revolut](https://www.revolut.com/business) | Fiat | `method-revolut` |
 | [LND](https://github.com/lightningnetwork/lnd) | Lightning | `method-lnd` |
-| [Bitvora](https://bitvora.com) | Lightning | `method-bitvora` |
+| [LND](https://github.com/lightningnetwork/lnd) | On-chain (receive) | `method-lnd-onchain` |
+| [Bitvora](https://bitvora.com) | Lightning | `method-bitvora` _(deprecated)_ |
 
 ## Usage
 
@@ -41,6 +42,37 @@ let amount = CurrencyAmount::from_f32(Currency::USD, 20.00);
 let payment = stripe.create_order("Order #123", amount, None).await?;
 ```
 
+### On-chain Payments
+
+On-chain providers implement the `OnChainProvider` trait for receiving Bitcoin
+deposits. Derive a fresh receive address per order and stream chain events
+(amounts are reported in milli-satoshis, carrying the real `txid`):
+
+```rust,ignore
+use payments_rs::onchain::{LndOnChainProvider, LndOnChainConfig, LndAddressType, OnChainProvider, NewAddressRequest};
+use payments_rs::currency::{Currency, CurrencyAmount};
+use payments_rs::lightning::setup_crypto_provider;
+use std::path::Path;
+
+setup_crypto_provider();
+let provider = LndOnChainProvider::new(
+    "https://localhost:10009",
+    Path::new("/path/to/tls.cert"),
+    Path::new("/path/to/admin.macaroon"),
+    LndOnChainConfig {
+        address_type: LndAddressType::WitnessPubkeyHash,
+        account: None,
+        min_confirmations: 1,
+    },
+).await?;
+
+let address = provider.new_address(NewAddressRequest {
+    amount: CurrencyAmount::from_f32(Currency::BTC, 0.001),
+    memo: Some("Order #123".to_string()),
+    label: Some("order-123".to_string()),
+}).await?;
+```
+
 ### Lightning Payments
 
 Lightning providers implement the `LightningNode` trait:
@@ -62,7 +94,9 @@ let invoice = node.add_invoice(AddInvoiceRequest {
 | Feature | Description |
 |---------|-------------|
 | `method-lnd` | LND gRPC integration (default) |
-| `method-bitvora` | Bitvora REST API integration (default) |
+| `method-lnd-onchain` | LND on-chain (receive) integration (default) |
+| `method-bitvora` | Bitvora REST API integration (default, **deprecated** — no longer operational) |
+| `mock` | `MockOnChainProvider` for downstream integration tests |
 | `method-revolut` | Revolut Merchant API integration (default) |
 | `method-stripe` | Stripe payment processing (default) |
 | `tls-ring` | Use `ring` for TLS (default) |

@@ -1,6 +1,6 @@
 [package]
 name = "payments-rs"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 description = "A Rust library for integrating with multiple payment providers (Stripe, Revolut, LND, Bitvora)"
 license = "MIT"
@@ -12,8 +12,10 @@ categories = ["api-bindings", "asynchronous"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage_nightly)'] }
 
 [features]
-default = ["method-lnd", "method-bitvora", "method-revolut", "method-stripe", "tls-ring"]
+default = ["method-lnd", "method-lnd-onchain", "method-bitvora", "method-revolut", "method-stripe", "tls-ring"]
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]
+method-lnd-onchain = ["onchain", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]
+# Bitvora is no longer operational and is retained only for backwards compatibility.
 method-bitvora = ["lightning", "json-api", "webhook", "dep:tokio-stream"]
 method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
 method-stripe = ["fiat", "webhook", "dep:hex", "dep:serde", "dep:serde_html_form", "dep:reqwest"]
@@ -24,6 +26,8 @@ json-api = ["dep:serde", "dep:serde_json", "dep:reqwest"]
 webhook = ["dep:tokio", "tokio/sync", "tokio-stream/sync", "dep:hmac", "dep:sha2"]
 rocket = ["dep:rocket"]
 lightning = ["dep:lightning-invoice"]
+onchain = []
+mock = ["onchain"]
 fiat = ["dep:serde_json"]
 
 [dependencies]
@@ -50,6 +54,11 @@ lightning-invoice = { version = "0.34", optional = true }
 [dev-dependencies]
 env_logger = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[[example]]
+name = "lnd_onchain"
+path = "examples/lnd_onchain_example.rs"
+required-features = ["method-lnd-onchain"]
 
 [[example]]
 name = "revolut"
