@@ -16,8 +16,8 @@ default = ["method-lnd", "method-lnd-onchain", "method-bitvora", "method-revolut
 method-lnd = ["lightning", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]
 method-lnd-onchain = ["onchain", "dep:fedimint-tonic-lnd", "dep:hex", "dep:rustls"]
 # Bitvora is no longer operational and is retained only for backwards compatibility.
-method-bitvora = ["lightning", "json-api", "webhook", "dep:tokio-stream"]
-method-revolut = ["fiat", "json-api", "webhook", "dep:chrono"]
+method-bitvora = ["lightning", "json-api", "webhook", "dep:tokio-stream", "dep:hex"]
+method-revolut = ["fiat", "json-api", "webhook", "dep:chrono", "dep:hex"]
 method-stripe = ["fiat", "webhook", "dep:hex", "dep:serde", "dep:serde_html_form", "dep:reqwest"]
 tls-ring = ["fedimint-tonic-lnd?/tls-ring", "rustls?/ring"]
 tls-aws = ["fedimint-tonic-lnd?/tls-aws-lc", "rustls?/aws-lc-rs"]
@@ -42,7 +42,7 @@ rocket = { version = "0.5", optional = true, default-features = false }
 fedimint-tonic-lnd = { version = "0.4", default-features = false, features = ["lightningrpc", "invoicesrpc", "routerrpc"], optional = true }
 rustls = { version = "0.23", default-features = false, optional = true }
 reqwest = { version = "0.13", optional = true }
-serde = { version = "1", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
 serde_json = { version = "1", optional = true }
 serde_html_form = { version = "0.4", optional = true }
 hex = { version = "0.4", optional = true }

@@ -20,6 +20,12 @@ use std::path::Path;
 use std::pin::Pin;
 use std::sync::Once;
 
+#[cfg(not(any(feature = "tls-ring", feature = "tls-aws")))]
+compile_error!(
+    "The LND backend requires a TLS crypto provider: enable either the \
+     `tls-ring` (default) or `tls-aws` feature."
+);
+
 static INIT_CRYPTO: Once = Once::new();
 
 /// Initialize the rustls crypto provider.
