@@ -4,10 +4,12 @@
 //! so that consumers (such as `lnvps-api`) can integration-test their monitoring
 //! loops without a real node. Enabled by the `mock` feature.
 
+use crate::currency::CurrencyAmount;
 use crate::onchain::{
     ChainPaymentUpdate, NewAddressRequest, NewAddressResponse, OnChainProvider, PaymentCursor,
+    SendCoinsRequest, SendCoinsResponse,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use futures::Stream;
 use std::pin::Pin;
@@ -24,6 +26,9 @@ pub struct MockOnChainProvider {
     addresses: Arc<Mutex<Vec<String>>>,
     /// Scripted updates paired with the block height at which they occur.
     updates: Arc<Vec<(u64, ChainPaymentUpdate)>>,
+    /// Every [`send_coins`](OnChainProvider::send_coins) request, recorded in
+    /// order so tests can assert what was sent.
+    sends: Arc<Mutex<Vec<SendCoinsRequest>>>,
 }
 
 impl MockOnChainProvider {
@@ -33,7 +38,14 @@ impl MockOnChainProvider {
         Self {
             addresses: Arc::new(Mutex::new(addresses)),
             updates: Arc::new(updates),
+            sends: Arc::new(Mutex::new(Vec::new())),
         }
+    }
+
+    /// All [`send_coins`](OnChainProvider::send_coins) requests received so far,
+    /// in call order.
+    pub fn sends(&self) -> Vec<SendCoinsRequest> {
+        self.sends.lock().map(|s| s.clone()).unwrap_or_default()
     }
 
     /// Select the updates that occur strictly after the given cursor height.
@@ -77,6 +89,34 @@ impl OnChainProvider for MockOnChainProvider {
         let updates = self.updates_after(from.as_ref());
         Ok(Box::pin(futures::stream::iter(updates)))
     }
+
+    async fn send_coins(&self, req: SendCoinsRequest) -> Result<SendCoinsResponse> {
+        if req.outputs.is_empty() {
+            return Err(anyhow!("send_coins requires at least one output"));
+        }
+        // Reject sub-satoshi outputs, matching real backends.
+        for o in &req.outputs {
+            if o.amount.value() < 1000 {
+                return Err(anyhow!(
+                    "output to {} is below the 1 sat minimum",
+                    o.address
+                ));
+            }
+        }
+        let total_msat = req.total_msat();
+        let mut sends = self
+            .sends
+            .lock()
+            .map_err(|_| anyhow!("sends mutex poisoned"))?;
+        // Deterministic fake txid derived from call order.
+        let txid = format!("mock-txid-{}", sends.len());
+        sends.push(req);
+        Ok(SendCoinsResponse {
+            txid,
+            total_amount: CurrencyAmount::millisats(total_msat),
+            fee: None,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -89,10 +129,77 @@ mod tests {
         ChainPaymentUpdate::Confirmed {
             address: "bc1qaddr".to_string(),
             txid: txid.to_string(),
+            vout: 0,
             amount_msat: 1000,
             confirmations: 1,
             label: None,
         }
+    }
+
+    fn send_output(address: &str, msat: u64) -> crate::onchain::SendOutput {
+        crate::onchain::SendOutput {
+            address: address.to_string(),
+            amount: CurrencyAmount::millisats(msat),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_send_coins_records_and_returns_txid() {
+        let provider = MockOnChainProvider::default();
+        let rsp = provider
+            .send_coins(SendCoinsRequest {
+                outputs: vec![send_output("bc1qpay", 2_000_000)],
+                sat_per_vbyte: Some(3),
+                target_conf: None,
+                label: Some("payout".to_string()),
+            })
+            .await
+            .unwrap();
+        assert_eq!(rsp.txid, "mock-txid-0");
+        assert_eq!(rsp.total_amount.value(), 2_000_000);
+        // Second send gets a distinct txid and is recorded in order.
+        let rsp2 = provider
+            .send_coins(SendCoinsRequest {
+                outputs: vec![send_output("bc1qpay2", 1_000_000)],
+                sat_per_vbyte: None,
+                target_conf: Some(6),
+                label: None,
+            })
+            .await
+            .unwrap();
+        assert_eq!(rsp2.txid, "mock-txid-1");
+        let sends = provider.sends();
+        assert_eq!(sends.len(), 2);
+        assert_eq!(sends[0].outputs[0].address, "bc1qpay");
+        assert_eq!(sends[1].outputs[0].address, "bc1qpay2");
+    }
+
+    #[tokio::test]
+    async fn test_send_coins_rejects_empty_and_sub_sat() {
+        let provider = MockOnChainProvider::default();
+        assert!(
+            provider
+                .send_coins(SendCoinsRequest {
+                    outputs: vec![],
+                    sat_per_vbyte: None,
+                    target_conf: None,
+                    label: None,
+                })
+                .await
+                .is_err()
+        );
+        assert!(
+            provider
+                .send_coins(SendCoinsRequest {
+                    outputs: vec![send_output("bc1qtiny", 999)],
+                    sat_per_vbyte: None,
+                    target_conf: None,
+                    label: None,
+                })
+                .await
+                .is_err()
+        );
+        assert!(provider.sends().is_empty());
     }
 
     #[test]

@@ -41,7 +41,7 @@ impl TokenGen for RevolutTokenGen {
         req: RequestBuilder,
     ) -> Result<RequestBuilder> {
         Ok(req
-            .header(AUTHORIZATION, format!("Bearer {}", &self.token))
+            .header(AUTHORIZATION, format!("Bearer {}", self.token))
             .header("Revolut-Api-Version", &self.api_version))
     }
 }

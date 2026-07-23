@@ -9,7 +9,7 @@ A Rust library for integrating with multiple payment providers, supporting both 
 | [Stripe](https://stripe.com) | Fiat | `method-stripe` |
 | [Revolut](https://www.revolut.com/business) | Fiat | `method-revolut` |
 | [LND](https://github.com/lightningnetwork/lnd) | Lightning | `method-lnd` |
-| [LND](https://github.com/lightningnetwork/lnd) | On-chain (receive) | `method-lnd-onchain` |
+| [LND](https://github.com/lightningnetwork/lnd) | On-chain (receive + send) | `method-lnd-onchain` |
 | [Bitvora](https://bitvora.com) | Lightning | `method-bitvora` _(deprecated)_ |
 
 ## Usage
@@ -44,9 +44,10 @@ let payment = stripe.create_order("Order #123", amount, None).await?;
 
 ### On-chain Payments
 
-On-chain providers implement the `OnChainProvider` trait for receiving Bitcoin
-deposits. Derive a fresh receive address per order and stream chain events
-(amounts are reported in milli-satoshis, carrying the real `txid`):
+On-chain providers implement the `OnChainProvider` trait for **receiving**
+Bitcoin deposits and **sending** on-chain payments. Derive a fresh receive
+address per order and stream chain events (amounts are reported in
+milli-satoshis, carrying the real `txid`):
 
 ```rust,ignore
 use payments_rs::onchain::{LndOnChainProvider, LndOnChainConfig, LndAddressType, OnChainProvider, NewAddressRequest};
@@ -73,6 +74,27 @@ let address = provider.new_address(NewAddressRequest {
 }).await?;
 ```
 
+Send an on-chain payment to one or more outputs in a single transaction
+("send-many"). Each output receives its exact amount; the network fee is paid on
+top from the wallet (absorbed by the sender). The response carries the broadcast
+`txid`:
+
+```rust,ignore
+use payments_rs::onchain::{SendCoinsRequest, SendOutput};
+use payments_rs::currency::CurrencyAmount;
+
+let sent = provider.send_coins(SendCoinsRequest {
+    outputs: vec![
+        SendOutput { address: "bc1q...".to_string(), amount: CurrencyAmount::millisats(2_000_000) },
+        SendOutput { address: "bc1q...".to_string(), amount: CurrencyAmount::millisats(500_000) },
+    ],
+    sat_per_vbyte: Some(5),
+    target_conf: None,
+    label: Some("payout batch".to_string()),
+}).await?;
+println!("broadcast {}", sent.txid);
+```
+
 ### Lightning Payments
 
 Lightning providers implement the `LightningNode` trait:
@@ -94,7 +116,7 @@ let invoice = node.add_invoice(AddInvoiceRequest {
 | Feature | Description |
 |---------|-------------|
 | `method-lnd` | LND gRPC integration (default) |
-| `method-lnd-onchain` | LND on-chain (receive) integration (default) |
+| `method-lnd-onchain` | LND on-chain (receive + send) integration (default) |
 | `method-bitvora` | Bitvora REST API integration (default, **deprecated** — no longer operational) |
 | `mock` | `MockOnChainProvider` for downstream integration tests |
 | `method-revolut` | Revolut Merchant API integration (default) |

@@ -6,17 +6,19 @@
 //! The async methods that require a running LND node are excluded from coverage;
 //! the pure transaction-parsing helpers are unit tested.
 
+use crate::currency::CurrencyAmount;
 use crate::onchain::{
     ChainPaymentUpdate, NewAddressRequest, NewAddressResponse, OnChainProvider, PaymentCursor,
-    sats_to_msat,
+    SendCoinsRequest, SendCoinsResponse, msat_to_sats, sats_to_msat,
 };
 use anyhow::{Result, anyhow};
 use async_trait::async_trait;
 use fedimint_tonic_lnd::lnrpc::{
-    GetTransactionsRequest, NewAddressRequest as LndNewAddressRequest, Transaction,
+    GetTransactionsRequest, NewAddressRequest as LndNewAddressRequest, SendManyRequest, Transaction,
 };
 use fedimint_tonic_lnd::{Client, connect};
 use futures::{Stream, StreamExt};
+use std::collections::HashMap;
 use std::path::Path;
 use std::pin::Pin;
 
@@ -125,6 +127,40 @@ fn subscribe_request(
     }
 }
 
+/// Build the LND `SendManyRequest` for a [`SendCoinsRequest`].
+///
+/// Amounts are converted from milli-satoshis to whole satoshis (LND works in
+/// sats); an output that rounds to 0 sats is rejected. Outputs are collapsed
+/// into an address→sats map, summing duplicate addresses. Returns the request
+/// and the exact total in milli-satoshis actually sent (post-truncation).
+fn build_send_many_request(req: &SendCoinsRequest) -> Result<(SendManyRequest, u64)> {
+    if req.outputs.is_empty() {
+        return Err(anyhow!("send_coins requires at least one output"));
+    }
+    let mut addr_to_amount: HashMap<String, i64> = HashMap::new();
+    let mut total_msat: u64 = 0;
+    for o in &req.outputs {
+        let sats = msat_to_sats(o.amount.value());
+        if sats == 0 {
+            return Err(anyhow!(
+                "output to {} is below the 1 sat minimum",
+                o.address
+            ));
+        }
+        let entry = addr_to_amount.entry(o.address.clone()).or_insert(0);
+        *entry = entry.saturating_add(sats as i64);
+        total_msat = total_msat.saturating_add(sats_to_msat(sats));
+    }
+    let request = SendManyRequest {
+        addr_to_amount,
+        target_conf: req.target_conf.map(|c| c as i32).unwrap_or(0),
+        sat_per_vbyte: req.sat_per_vbyte.unwrap_or(0),
+        label: req.label.clone().unwrap_or_default(),
+        ..Default::default()
+    };
+    Ok((request, total_msat))
+}
+
 /// Convert an LND [`Transaction`] into zero or more [`ChainPaymentUpdate`]s.
 ///
 /// Only outputs controlled by our wallet with a positive value are reported.
@@ -229,11 +265,31 @@ impl OnChainProvider for LndOnChainProvider {
 
         Ok(Box::pin(futures::stream::iter(historical).chain(live)))
     }
+
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn send_coins(&self, req: SendCoinsRequest) -> Result<SendCoinsResponse> {
+        let (request, total_msat) = build_send_many_request(&req)?;
+        let mut client = self.client.clone();
+        let resp = client
+            .lightning()
+            .send_many(request)
+            .await
+            .map_err(|e| anyhow!("LND SendMany failed: {}", e))?
+            .into_inner();
+        Ok(SendCoinsResponse {
+            txid: resp.txid,
+            total_amount: CurrencyAmount::millisats(total_msat),
+            // lnrpc SendMany does not report the fee; callers that need it can
+            // look the transaction up. Fee is paid on top of the outputs.
+            fee: None,
+        })
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::onchain::SendOutput;
     use fedimint_tonic_lnd::lnrpc::OutputDetail;
 
     fn output(address: &str, amount: i64, is_ours: bool) -> OutputDetail {
@@ -392,5 +448,78 @@ mod tests {
         let updates = transaction_to_updates(&t, 1);
         // -1 confirmations clamps to 0 -> Detected
         assert!(matches!(updates[0], ChainPaymentUpdate::Detected { .. }));
+    }
+
+    fn send_output(address: &str, msat: u64) -> SendOutput {
+        SendOutput {
+            address: address.to_string(),
+            amount: CurrencyAmount::millisats(msat),
+        }
+    }
+
+    #[test]
+    fn test_build_send_many_request_basic() {
+        let req = SendCoinsRequest {
+            outputs: vec![
+                send_output("bc1qone", 100_000),   // 100 sats
+                send_output("bc1qtwo", 2_500_000), // 2500 sats
+            ],
+            sat_per_vbyte: Some(7),
+            target_conf: Some(3),
+            label: Some("referral payout".to_string()),
+        };
+        let (lnd, total_msat) = build_send_many_request(&req).unwrap();
+        assert_eq!(total_msat, 2_600_000);
+        assert_eq!(lnd.addr_to_amount.get("bc1qone"), Some(&100));
+        assert_eq!(lnd.addr_to_amount.get("bc1qtwo"), Some(&2500));
+        // sat_per_vbyte set -> target_conf still passed through
+        assert_eq!(lnd.sat_per_vbyte, 7);
+        assert_eq!(lnd.target_conf, 3);
+        assert_eq!(lnd.label, "referral payout");
+    }
+
+    #[test]
+    fn test_build_send_many_request_sums_duplicate_addresses() {
+        let req = SendCoinsRequest {
+            outputs: vec![
+                send_output("bc1qdup", 1_000_000), // 1000 sats
+                send_output("bc1qdup", 500_000),   // 500 sats
+            ],
+            sat_per_vbyte: None,
+            target_conf: None,
+            label: None,
+        };
+        let (lnd, total_msat) = build_send_many_request(&req).unwrap();
+        assert_eq!(lnd.addr_to_amount.len(), 1);
+        assert_eq!(lnd.addr_to_amount.get("bc1qdup"), Some(&1500));
+        assert_eq!(total_msat, 1_500_000);
+        // Defaults when unset.
+        assert_eq!(lnd.sat_per_vbyte, 0);
+        assert_eq!(lnd.target_conf, 0);
+        assert_eq!(lnd.label, "");
+    }
+
+    #[test]
+    fn test_build_send_many_request_rejects_empty() {
+        let req = SendCoinsRequest {
+            outputs: vec![],
+            sat_per_vbyte: None,
+            target_conf: None,
+            label: None,
+        };
+        assert!(build_send_many_request(&req).is_err());
+    }
+
+    #[test]
+    fn test_build_send_many_request_rejects_sub_sat_output() {
+        // 500 msat rounds down to 0 sats -> rejected.
+        let req = SendCoinsRequest {
+            outputs: vec![send_output("bc1qtiny", 500)],
+            sat_per_vbyte: None,
+            target_conf: None,
+            label: None,
+        };
+        let err = build_send_many_request(&req).unwrap_err().to_string();
+        assert!(err.contains("bc1qtiny"), "unexpected error: {err}");
     }
 }
