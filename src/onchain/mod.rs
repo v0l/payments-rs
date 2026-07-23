@@ -1,9 +1,11 @@
 //! On-chain Bitcoin payment integrations.
 //!
 //! This module provides integrations with on-chain Bitcoin backends for
-//! **receiving** payments. Callers derive a fresh receive address per order
-//! and are notified when funds arrive, including the number of confirmations
-//! and the transaction id (`txid`).
+//! **receiving** and **sending** payments. Callers derive a fresh receive
+//! address per order and are notified when funds arrive, including the number of
+//! confirmations and the transaction id (`txid`), and can send payments to one
+//! or more outputs in a single transaction via
+//! [`OnChainProvider::send_coins`].
 //!
 //! # Supported Providers
 //!
@@ -96,8 +98,9 @@ pub fn msat_to_sats(msat: u64) -> u64 {
 
 /// Trait for on-chain Bitcoin payment backends.
 ///
-/// Implement this trait to add support for additional on-chain providers.
-/// The consumer only needs to **receive** payments.
+/// Implement this trait to add support for additional on-chain providers. The
+/// consumer can **receive** payments (derive addresses + stream deposits) and
+/// **send** payments ([`send_coins`](OnChainProvider::send_coins)).
 #[async_trait]
 pub trait OnChainProvider: Send + Sync {
     /// Derive/allocate a fresh receive address for a new order.
@@ -119,6 +122,71 @@ pub trait OnChainProvider: Send + Sync {
         &self,
         from: Option<PaymentCursor>,
     ) -> Result<Pin<Box<dyn Stream<Item = ChainPaymentUpdate> + Send>>>;
+
+    /// Send an on-chain payment to one or more destination outputs in a single
+    /// transaction ("send-many").
+    ///
+    /// Each output receives its exact requested amount; the network fee is paid
+    /// on top from the wallet (i.e. **absorbed by the sender**, not deducted
+    /// from the outputs). The returned [`SendCoinsResponse`] carries the
+    /// broadcast `txid` and, when the backend reports it, the fee paid.
+    ///
+    /// Amounts are milli-satoshis but Bitcoin has satoshi granularity, so any
+    /// sub-satoshi remainder is rejected (an output that rounds to 0 sats is an
+    /// error). Sending is **not** idempotent — a retry after an unknown outcome
+    /// may broadcast a second transaction, so callers must reserve/de-duplicate
+    /// their own payout records before calling.
+    async fn send_coins(&self, req: SendCoinsRequest) -> Result<SendCoinsResponse>;
+}
+
+/// A single destination output of an on-chain [`OnChainProvider::send_coins`].
+#[derive(Debug, Clone)]
+pub struct SendOutput {
+    /// Destination on-chain address.
+    pub address: String,
+    /// Amount to send to `address`, in milli-satoshis. Must be at least 1 whole
+    /// satoshi (1000 msat); sub-satoshi remainders are not representable
+    /// on-chain and are rejected.
+    pub amount: CurrencyAmount,
+}
+
+/// Request to send an on-chain payment to one or more outputs in a single
+/// transaction.
+#[derive(Debug, Clone)]
+pub struct SendCoinsRequest {
+    /// Destination outputs. Must be non-empty. Multiple outputs to the same
+    /// address are summed by the backend into a single output.
+    pub outputs: Vec<SendOutput>,
+    /// Manual fee rate in sat/vByte. `None` lets the backend pick a fee for the
+    /// `target_conf` confirmation target.
+    pub sat_per_vbyte: Option<u64>,
+    /// Confirmation target in blocks, used when `sat_per_vbyte` is `None`.
+    /// `None` uses the backend default.
+    pub target_conf: Option<u32>,
+    /// Optional transaction label/memo (backends that support it).
+    pub label: Option<String>,
+}
+
+impl SendCoinsRequest {
+    /// Total amount across all outputs (excludes the network fee), in
+    /// milli-satoshis.
+    pub fn total_msat(&self) -> u64 {
+        self.outputs
+            .iter()
+            .fold(0u64, |acc, o| acc.saturating_add(o.amount.value()))
+    }
+}
+
+/// Result of an on-chain [`OnChainProvider::send_coins`].
+#[derive(Debug, Clone)]
+pub struct SendCoinsResponse {
+    /// Transaction id (hex) of the broadcast transaction.
+    pub txid: String,
+    /// Total amount sent across all outputs (excludes fees), in milli-satoshis.
+    pub total_amount: CurrencyAmount,
+    /// Total network fee paid, if reported by the backend. The fee is paid by
+    /// the sender on top of the outputs.
+    pub fee: Option<CurrencyAmount>,
 }
 
 /// Request to derive a new on-chain receive address.
@@ -362,6 +430,44 @@ mod tests {
         } else {
             panic!("Expected Confirmed variant");
         }
+    }
+
+    #[test]
+    fn test_send_coins_request_total_msat() {
+        let req = SendCoinsRequest {
+            outputs: vec![
+                SendOutput {
+                    address: "bc1qone".to_string(),
+                    amount: CurrencyAmount::millisats(100_000),
+                },
+                SendOutput {
+                    address: "bc1qtwo".to_string(),
+                    amount: CurrencyAmount::millisats(250_000),
+                },
+            ],
+            sat_per_vbyte: Some(5),
+            target_conf: None,
+            label: Some("payout batch".to_string()),
+        };
+        assert_eq!(req.total_msat(), 350_000);
+        // Clone/Debug coverage
+        let cloned = req.clone();
+        assert_eq!(cloned.outputs.len(), 2);
+        assert!(format!("{:?}", req).contains("payout batch"));
+    }
+
+    #[test]
+    fn test_send_coins_response_clone_debug() {
+        let rsp = SendCoinsResponse {
+            txid: "abc123".to_string(),
+            total_amount: CurrencyAmount::millisats(350_000),
+            fee: Some(CurrencyAmount::millisats(1_000)),
+        };
+        let cloned = rsp.clone();
+        assert_eq!(cloned.txid, "abc123");
+        assert_eq!(cloned.total_amount.value(), 350_000);
+        assert_eq!(cloned.fee.map(|f| f.value()), Some(1_000));
+        assert!(format!("{:?}", rsp).contains("abc123"));
     }
 
     #[test]
