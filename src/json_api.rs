@@ -124,7 +124,7 @@ impl JsonApi {
             if let Some(token_gen) = self.token_gen.as_ref() {
                 req = token_gen.generate_token(method.clone(), &url, Some(&body), req)?;
             }
-            debug!(">> {} {}: {}", method.clone(), path, &body);
+            debug!(">> {} {}: {}", method.clone(), path, body);
             req.header(CONTENT_TYPE, "application/json; charset=utf-8")
                 .body(body)
                 .build()?
@@ -171,7 +171,7 @@ impl JsonApi {
                 }
             }
         } else {
-            bail!("{} {}: {}: {}", method, path, status, &text);
+            bail!("{} {}: {}: {}", method, path, status, text);
         }
     }
 
@@ -193,7 +193,7 @@ impl JsonApi {
         if status.is_success() {
             Ok(status.as_u16())
         } else {
-            bail!("{} {}: {}: {}", method, path, status, &text);
+            bail!("{} {}: {}: {}", method, path, status, text);
         }
     }
 }
