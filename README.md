@@ -93,6 +93,8 @@ let sent = provider.send_coins(SendCoinsRequest {
     label: Some("payout batch".to_string()),
 }).await?;
 println!("broadcast {}", sent.txid);
+// `sent.raw_tx` (hex, when available) lets callers decode which output
+// index (vout) paid each address for a batched send-many transaction.
 ```
 
 ### Lightning Payments
