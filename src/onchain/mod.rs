@@ -187,6 +187,14 @@ pub struct SendCoinsResponse {
     /// Total network fee paid, if reported by the backend. The fee is paid by
     /// the sender on top of the outputs.
     pub fee: Option<CurrencyAmount>,
+    /// Raw broadcast transaction, hex-encoded, when the backend can supply it.
+    ///
+    /// Send-many transactions pay several outputs, and the backend does not
+    /// report which output index (`vout`) pays each address. Callers that need
+    /// per-output outpoints (`txid:vout`) can decode this raw transaction and
+    /// match each destination's script. `None` when the backend cannot return
+    /// the raw transaction.
+    pub raw_tx: Option<String>,
 }
 
 /// Request to derive a new on-chain receive address.
@@ -462,11 +470,13 @@ mod tests {
             txid: "abc123".to_string(),
             total_amount: CurrencyAmount::millisats(350_000),
             fee: Some(CurrencyAmount::millisats(1_000)),
+            raw_tx: Some("0200000000".to_string()),
         };
         let cloned = rsp.clone();
         assert_eq!(cloned.txid, "abc123");
         assert_eq!(cloned.total_amount.value(), 350_000);
         assert_eq!(cloned.fee.map(|f| f.value()), Some(1_000));
+        assert_eq!(cloned.raw_tx.as_deref(), Some("0200000000"));
         assert!(format!("{:?}", rsp).contains("abc123"));
     }
 

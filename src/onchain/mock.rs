@@ -115,6 +115,7 @@ impl OnChainProvider for MockOnChainProvider {
             txid,
             total_amount: CurrencyAmount::millisats(total_msat),
             fee: None,
+            raw_tx: None,
         })
     }
 }

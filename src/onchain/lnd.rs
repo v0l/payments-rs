@@ -276,13 +276,45 @@ impl OnChainProvider for LndOnChainProvider {
             .await
             .map_err(|e| anyhow!("LND SendMany failed: {}", e))?
             .into_inner();
+        // SendMany only returns the txid, not the per-output vouts. Look the tx
+        // up in the wallet to return its raw bytes so callers can decode which
+        // output pays each address. Best-effort: `None` if it can't be found.
+        let raw_tx = self.lookup_raw_tx(&resp.txid).await.ok().flatten();
         Ok(SendCoinsResponse {
             txid: resp.txid,
             total_amount: CurrencyAmount::millisats(total_msat),
-            // lnrpc SendMany does not report the fee; callers that need it can
-            // look the transaction up. Fee is paid on top of the outputs.
+            // lnrpc SendMany does not report the fee. Fee is paid on top of the
+            // outputs.
             fee: None,
+            raw_tx,
         })
+    }
+}
+
+impl LndOnChainProvider {
+    /// Fetch the hex-encoded raw transaction for `txid` from the wallet's
+    /// transaction history. Returns `None` when the transaction isn't found or
+    /// carries no raw bytes.
+    #[cfg_attr(coverage_nightly, coverage(off))]
+    async fn lookup_raw_tx(&self, txid: &str) -> Result<Option<String>> {
+        let mut client = self.client.clone();
+        let txns = client
+            .lightning()
+            .get_transactions(GetTransactionsRequest {
+                start_height: 0,
+                end_height: -1,
+                account: self.config.account.clone().unwrap_or_default(),
+                index_offset: 0,
+                max_transactions: 0,
+            })
+            .await?
+            .into_inner();
+        Ok(txns
+            .transactions
+            .into_iter()
+            .find(|t| t.tx_hash == txid)
+            .map(|t| t.raw_tx_hex)
+            .filter(|s| !s.is_empty()))
     }
 }
 
