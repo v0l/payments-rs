@@ -946,6 +946,9 @@ pub enum RevolutWebhookEvent {
     OrderAuthorised,
     OrderCompleted,
     OrderCancelled,
+    OrderFailed,
+    #[serde(other)]
+    Unknown,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -1134,6 +1137,20 @@ mod tests {
 
         let serialized = serde_json::to_string(&RevolutWebhookEvent::OrderAuthorised).unwrap();
         assert_eq!(serialized, r#""ORDER_AUTHORISED""#);
+    }
+
+    #[test]
+    fn test_revolut_webhook_list_with_foreign_events() {
+        let json = r#"[{"id":"a","url":"https://a/hook","events":["ORDER_COMPLETED","ORDER_FAILED","PAYOUT_COMPLETED"],"state":"ACTIVE"}]"#;
+        let hooks: Vec<RevolutWebhook> = serde_json::from_str(json).unwrap();
+        assert!(matches!(
+            hooks[0].events.as_slice(),
+            [
+                RevolutWebhookEvent::OrderCompleted,
+                RevolutWebhookEvent::OrderFailed,
+                RevolutWebhookEvent::Unknown
+            ]
+        ));
     }
 
     #[test]
