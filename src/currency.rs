@@ -27,6 +27,49 @@ pub enum Currency {
     AUD,
     /// Japanese Yen
     JPY,
+    /// Monero
+    XMR,
+    /// Litecoin
+    LTC,
+    /// Ethereum
+    ETH,
+    /// Tether (USDT) on the Tron network
+    USDTTRC,
+}
+
+impl Currency {
+    /// Every supported currency.
+    pub const ALL: [Currency; 12] = [
+        Currency::EUR,
+        Currency::BTC,
+        Currency::USD,
+        Currency::GBP,
+        Currency::CAD,
+        Currency::CHF,
+        Currency::AUD,
+        Currency::JPY,
+        Currency::XMR,
+        Currency::LTC,
+        Currency::ETH,
+        Currency::USDTTRC,
+    ];
+
+    /// True for cryptocurrencies, which are held in milli-units (1e-11 of a coin)
+    /// and can never be charged through a fiat payment service.
+    pub fn is_crypto(&self) -> bool {
+        matches!(
+            self,
+            Currency::BTC | Currency::XMR | Currency::LTC | Currency::ETH | Currency::USDTTRC
+        )
+    }
+
+    /// Smallest units per standard unit: 1e11 for crypto, 100 for fiat.
+    ///
+    /// Crypto shares one scale so every coin fits a `u64` (ETH has 18 decimals,
+    /// which would overflow at about 18 ETH in native units).
+    pub fn scale(&self) -> f64 {
+        if self.is_crypto() { 1.0e11 } else { 100.0 }
+    }
 }
 
 impl Display for Currency {
@@ -40,6 +83,10 @@ impl Display for Currency {
             Currency::CHF => write!(f, "CHF"),
             Currency::AUD => write!(f, "AUD"),
             Currency::JPY => write!(f, "JPY"),
+            Currency::XMR => write!(f, "XMR"),
+            Currency::LTC => write!(f, "LTC"),
+            Currency::ETH => write!(f, "ETH"),
+            Currency::USDTTRC => write!(f, "USDTTRC"),
         }
     }
 }
@@ -69,6 +116,10 @@ impl FromStr for Currency {
             "chf" => Ok(Currency::CHF),
             "aud" => Ok(Currency::AUD),
             "jpy" => Ok(Currency::JPY),
+            "xmr" => Ok(Currency::XMR),
+            "ltc" => Ok(Currency::LTC),
+            "eth" => Ok(Currency::ETH),
+            "usdttrc" => Ok(Currency::USDTTRC),
             _ => Err(ParseCurrencyError(s.to_string())),
         }
     }
@@ -95,8 +146,6 @@ impl FromStr for Currency {
 pub struct CurrencyAmount(Currency, u64);
 
 impl CurrencyAmount {
-    const MILLI_SATS: f64 = 1.0e11;
-
     /// Create a Bitcoin amount from milli-satoshis.
     pub fn millisats(amount: u64) -> Self {
         CurrencyAmount(Currency::BTC, amount)
@@ -110,15 +159,13 @@ impl CurrencyAmount {
     /// Create a currency amount from a floating-point value.
     ///
     /// For fiat currencies, this expects the standard unit (e.g., 20.00 for $20).
-    /// For Bitcoin, this expects the BTC amount (e.g., 0.001 for 0.001 BTC).
+    /// For cryptocurrencies, this expects the coin amount (e.g., 0.001 for 0.001 BTC).
     pub fn from_f32(currency: Currency, amount: f32) -> Self {
-        CurrencyAmount(
-            currency,
-            match currency {
-                Currency::BTC => (amount as f64 * Self::MILLI_SATS) as u64, // milli-sats
-                _ => (amount * 100.0) as u64,                               // cents
-            },
-        )
+        if currency.is_crypto() {
+            CurrencyAmount(currency, (amount as f64 * currency.scale()) as u64)
+        } else {
+            CurrencyAmount(currency, (amount * 100.0) as u64)
+        }
     }
 
     /// Get the raw value in the smallest unit.
@@ -128,9 +175,10 @@ impl CurrencyAmount {
 
     /// Get the value as a floating-point number in the standard unit.
     pub fn value_f32(&self) -> f32 {
-        match self.0 {
-            Currency::BTC => (self.1 as f64 / Self::MILLI_SATS) as f32,
-            _ => self.1 as f32 / 100.0,
+        if self.0.is_crypto() {
+            (self.1 as f64 / self.0.scale()) as f32
+        } else {
+            self.1 as f32 / 100.0
         }
     }
 
@@ -155,9 +203,10 @@ impl Sub for CurrencyAmount {
 
 impl Display for CurrencyAmount {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        match self.0 {
-            Currency::BTC => write!(f, "BTC {:.8}", self.value_f32()),
-            _ => write!(f, "{} {:.2}", self.0, self.value_f32()),
+        if self.0.is_crypto() {
+            write!(f, "{} {:.8}", self.0, self.value_f32())
+        } else {
+            write!(f, "{} {:.2}", self.0, self.value_f32())
         }
     }
 }
@@ -176,6 +225,10 @@ mod tests {
         assert_eq!(Currency::CHF.to_string(), "CHF");
         assert_eq!(Currency::AUD.to_string(), "AUD");
         assert_eq!(Currency::JPY.to_string(), "JPY");
+        assert_eq!(Currency::XMR.to_string(), "XMR");
+        assert_eq!(Currency::LTC.to_string(), "LTC");
+        assert_eq!(Currency::ETH.to_string(), "ETH");
+        assert_eq!(Currency::USDTTRC.to_string(), "USDTTRC");
     }
 
     #[test]
@@ -189,6 +242,11 @@ mod tests {
         assert_eq!("chf".parse::<Currency>(), Ok(Currency::CHF));
         assert_eq!("aud".parse::<Currency>(), Ok(Currency::AUD));
         assert_eq!("jpy".parse::<Currency>(), Ok(Currency::JPY));
+        assert_eq!("xmr".parse::<Currency>(), Ok(Currency::XMR));
+        assert_eq!("XMR".parse::<Currency>(), Ok(Currency::XMR));
+        assert_eq!("ltc".parse::<Currency>(), Ok(Currency::LTC));
+        assert_eq!("eth".parse::<Currency>(), Ok(Currency::ETH));
+        assert_eq!("USDTTRC".parse::<Currency>(), Ok(Currency::USDTTRC));
         assert_eq!(
             "invalid".parse::<Currency>(),
             Err(ParseCurrencyError("invalid".to_string()))
@@ -279,6 +337,63 @@ mod tests {
     fn test_currency_amount_display_fiat() {
         let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
         assert_eq!(amount.to_string(), "USD 20.00");
+    }
+
+    #[test]
+    fn test_currency_all_round_trips_display_and_parse() {
+        for c in Currency::ALL {
+            assert_eq!(c.to_string().parse::<Currency>(), Ok(c));
+        }
+        let unique: std::collections::HashSet<_> = Currency::ALL.iter().collect();
+        assert_eq!(unique.len(), Currency::ALL.len());
+    }
+
+    #[test]
+    fn test_currency_is_crypto() {
+        for c in [
+            Currency::BTC,
+            Currency::XMR,
+            Currency::LTC,
+            Currency::ETH,
+            Currency::USDTTRC,
+        ] {
+            assert!(c.is_crypto(), "{c}");
+            assert_eq!(c.scale(), 1.0e11, "{c}");
+        }
+        for c in [
+            Currency::EUR,
+            Currency::USD,
+            Currency::GBP,
+            Currency::CAD,
+            Currency::CHF,
+            Currency::AUD,
+            Currency::JPY,
+        ] {
+            assert!(!c.is_crypto(), "{c}");
+            assert_eq!(c.scale(), 100.0, "{c}");
+        }
+    }
+
+    #[test]
+    fn test_currency_amount_crypto_scale() {
+        for c in [
+            Currency::XMR,
+            Currency::LTC,
+            Currency::ETH,
+            Currency::USDTTRC,
+        ] {
+            let amount = CurrencyAmount::from_f32(c, 1.0);
+            assert_eq!(amount.value(), 100_000_000_000, "{c}");
+            assert!((amount.value_f32() - 1.0).abs() < 0.0001, "{c}");
+            assert_eq!(amount.to_string(), format!("{c} 1.00000000"));
+        }
+    }
+
+    #[test]
+    fn test_currency_amount_sub_crypto_mismatch() {
+        let a = CurrencyAmount::from_u64(Currency::XMR, 2000);
+        let b = CurrencyAmount::from_u64(Currency::LTC, 500);
+        assert!((a - b).is_err());
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::USER_AGENT;
-use crate::currency::{Currency, CurrencyAmount};
+use crate::currency::CurrencyAmount;
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
 use crate::webhook::{WebhookMessage, verify_timestamp_within};
 use anyhow::{Context, Result, anyhow, bail};
@@ -282,7 +282,9 @@ impl StripeApi {
                 "/v1/payment_intents",
                 CreatePaymentIntentRequest {
                     amount: match amount.currency() {
-                        Currency::BTC => bail!("Bitcoin amount not allowed for fiat payments"),
+                        c if c.is_crypto() => {
+                            bail!("{} amount not allowed for fiat payments", c)
+                        }
                         _ => amount.value(),
                     },
                     currency,

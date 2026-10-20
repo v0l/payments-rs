@@ -1,4 +1,4 @@
-use crate::currency::{Currency, CurrencyAmount};
+use crate::currency::CurrencyAmount;
 use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem, SubscriptionPaymentInfo};
 use crate::json_api::{JsonApi, TokenGen};
 use crate::webhook::{WebhookMessage, verify_timestamp_within};
@@ -166,7 +166,9 @@ impl RevolutApi {
                 CreateOrderRequest {
                     currency: amount.currency().to_string(),
                     amount: match amount.currency() {
-                        Currency::BTC => bail!("Bitcoin amount not allowed for fiat payments"),
+                        c if c.is_crypto() => {
+                            bail!("{} amount not allowed for fiat payments", c)
+                        }
                         _ => amount.value(),
                     },
                     description,
