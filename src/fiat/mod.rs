@@ -24,7 +24,7 @@
 //! let payment = stripe.create_order("Order #123", amount, None).await?;
 //! ```
 
-use crate::currency::CurrencyAmount;
+use crate::currency::{CurrencyAmount, FIAT_UNITS_PER_CENT};
 use anyhow::{Result, anyhow};
 use std::future::Future;
 use std::pin::Pin;
@@ -49,7 +49,7 @@ pub struct LineItem {
     pub name: String,
     /// Description of the item (optional)
     pub description: Option<String>,
-    /// Unit price in smallest currency unit (e.g., cents for USD)
+    /// Unit price in smallest currency unit (1/100 cent for fiat)
     pub unit_amount: u64,
     /// Quantity of this item
     pub quantity: u64,
@@ -59,7 +59,7 @@ pub struct LineItem {
     pub images: Option<Vec<String>>,
     /// Optional metadata for the item
     pub metadata: Option<serde_json::Value>,
-    /// Tax amount in smallest currency unit (optional)
+    /// Tax amount in smallest currency unit (1/100 cent for fiat, optional)
     pub tax_amount: Option<u64>,
     /// Tax name/description (e.g., "VAT", "Sales Tax") (optional)
     pub tax_name: Option<String>,
@@ -80,6 +80,16 @@ impl LineItem {
     pub fn subtotal_amount(&self) -> u64 {
         self.unit_amount.saturating_mul(self.quantity)
     }
+
+    pub fn total_cents(&self) -> u64 {
+        units_to_cents(self.unit_amount)
+            .saturating_mul(self.quantity)
+            .saturating_add(self.tax_amount.map(units_to_cents).unwrap_or(0))
+    }
+}
+
+pub fn units_to_cents(units: u64) -> u64 {
+    units.div_ceil(FIAT_UNITS_PER_CENT)
 }
 
 /// Trait for fiat payment service providers.
@@ -313,5 +323,22 @@ mod tests {
         assert_eq!(cloned.payment_method_id.as_deref(), Some("pm_1"));
         let debug_str = format!("{:?}", info);
         assert!(debug_str.contains("order_1"));
+    }
+
+    #[test]
+    fn test_line_item_total_cents_rounds_each_part_up() {
+        let item = LineItem {
+            name: "Hourly VM".to_string(),
+            description: None,
+            unit_amount: 12_345,
+            quantity: 3,
+            currency: "EUR".to_string(),
+            images: None,
+            metadata: None,
+            tax_amount: Some(2_501),
+            tax_name: Some("VAT".to_string()),
+        };
+        assert_eq!(units_to_cents(12_345), 124);
+        assert_eq!(item.total_cents(), 124 * 3 + 26);
     }
 }

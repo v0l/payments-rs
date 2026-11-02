@@ -63,14 +63,26 @@ impl Currency {
         )
     }
 
-    /// Smallest units per standard unit: 1e11 for crypto, 100 for fiat.
+    /// Smallest units per standard unit: 1e11 for crypto, 10000 for fiat.
     ///
     /// Crypto shares one scale so every coin fits a `u64` (ETH has 18 decimals,
     /// which would overflow at about 18 ETH in native units).
     pub fn scale(&self) -> f64 {
-        if self.is_crypto() { 1.0e11 } else { 100.0 }
+        self.scale_u64() as f64
+    }
+
+    pub fn scale_u64(&self) -> u64 {
+        if self.is_crypto() {
+            100_000_000_000
+        } else {
+            FIAT_SCALE
+        }
     }
 }
+
+pub const FIAT_SCALE: u64 = 10_000;
+
+pub const FIAT_UNITS_PER_CENT: u64 = FIAT_SCALE / 100;
 
 impl Display for Currency {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
@@ -151,9 +163,22 @@ impl CurrencyAmount {
         CurrencyAmount(Currency::BTC, amount)
     }
 
-    /// Create a currency amount from the smallest unit (cents for fiat, milli-sats for BTC).
+    /// Create a currency amount from the smallest unit (1/100 cent for fiat, milli-units for crypto).
     pub fn from_u64(currency: Currency, amount: u64) -> Self {
         CurrencyAmount(currency, amount)
+    }
+
+    pub fn from_cents(currency: Currency, cents: u64) -> Result<Self> {
+        ensure!(!currency.is_crypto(), "{} has no cents", currency);
+        Ok(CurrencyAmount(
+            currency,
+            cents.saturating_mul(FIAT_UNITS_PER_CENT),
+        ))
+    }
+
+    pub fn to_cents(&self) -> Result<u64> {
+        ensure!(!self.0.is_crypto(), "{} has no cents", self.0);
+        Ok(self.1.div_ceil(FIAT_UNITS_PER_CENT))
     }
 
     /// Create a currency amount from a floating-point value.
@@ -161,11 +186,7 @@ impl CurrencyAmount {
     /// For fiat currencies, this expects the standard unit (e.g., 20.00 for $20).
     /// For cryptocurrencies, this expects the coin amount (e.g., 0.001 for 0.001 BTC).
     pub fn from_f32(currency: Currency, amount: f32) -> Self {
-        if currency.is_crypto() {
-            CurrencyAmount(currency, (amount as f64 * currency.scale()) as u64)
-        } else {
-            CurrencyAmount(currency, (amount * 100.0) as u64)
-        }
+        CurrencyAmount(currency, (amount as f64 * currency.scale()).round() as u64)
     }
 
     /// Get the raw value in the smallest unit.
@@ -175,11 +196,7 @@ impl CurrencyAmount {
 
     /// Get the value as a floating-point number in the standard unit.
     pub fn value_f32(&self) -> f32 {
-        if self.0.is_crypto() {
-            (self.1 as f64 / self.0.scale()) as f32
-        } else {
-            self.1 as f32 / 100.0
-        }
+        (self.1 as f64 / self.0.scale()) as f32
     }
 
     /// Get the currency type.
@@ -271,7 +288,7 @@ mod tests {
     fn test_currency_amount_from_f32_fiat() {
         let amount = CurrencyAmount::from_f32(Currency::USD, 20.00);
         assert_eq!(amount.currency(), Currency::USD);
-        assert_eq!(amount.value(), 2000); // 2000 cents
+        assert_eq!(amount.value(), 200_000);
     }
 
     #[test]
@@ -283,7 +300,7 @@ mod tests {
 
     #[test]
     fn test_currency_amount_value_f32_fiat() {
-        let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
+        let amount = CurrencyAmount::from_u64(Currency::USD, 200_000);
         assert!((amount.value_f32() - 20.0).abs() < 0.01);
     }
 
@@ -335,8 +352,42 @@ mod tests {
 
     #[test]
     fn test_currency_amount_display_fiat() {
-        let amount = CurrencyAmount::from_u64(Currency::USD, 2000);
+        let amount = CurrencyAmount::from_u64(Currency::USD, 200_000);
         assert_eq!(amount.to_string(), "USD 20.00");
+    }
+
+    #[test]
+    fn test_fiat_holds_a_hundredth_of_a_cent() {
+        let amount = CurrencyAmount::from_f32(Currency::EUR, 0.0001);
+        assert_eq!(amount.value(), 1);
+        assert_eq!(Currency::EUR.scale_u64(), 10_000);
+        assert_eq!(Currency::BTC.scale_u64(), 100_000_000_000);
+    }
+
+    #[test]
+    fn test_cents_round_trip_and_round_up() {
+        let amount = CurrencyAmount::from_cents(Currency::EUR, 1099).unwrap();
+        assert_eq!(amount.value(), 109_900);
+        assert_eq!(amount.to_cents().unwrap(), 1099);
+        assert_eq!(
+            CurrencyAmount::from_u64(Currency::EUR, 109_901)
+                .to_cents()
+                .unwrap(),
+            1100,
+            "a fraction of a cent is charged as a whole cent"
+        );
+        assert_eq!(
+            CurrencyAmount::from_u64(Currency::EUR, 0)
+                .to_cents()
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn test_crypto_has_no_cents() {
+        assert!(CurrencyAmount::from_cents(Currency::BTC, 1).is_err());
+        assert!(CurrencyAmount::millisats(1000).to_cents().is_err());
     }
 
     #[test]
@@ -370,7 +421,7 @@ mod tests {
             Currency::JPY,
         ] {
             assert!(!c.is_crypto(), "{c}");
-            assert_eq!(c.scale(), 100.0, "{c}");
+            assert_eq!(c.scale(), 10_000.0, "{c}");
         }
     }
 

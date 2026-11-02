@@ -41,7 +41,7 @@ async fn main() -> Result<()> {
         line_items: vec![CheckoutLineItem {
             price_data: Some(PriceData {
                 currency: "usd".to_string(),
-                unit_amount: 2000, // $20.00 in cents
+                unit_amount: 200000, // $20.00
                 product_data: ProductData {
                     name: "Test Product".to_string(),
                     description: Some("A test product".to_string()),
@@ -113,23 +113,23 @@ async fn main() -> Result<()> {
         LineItem {
             name: "Premium Widget".to_string(),
             description: Some("A high-quality widget".to_string()),
-            unit_amount: 2500, // $25.00 in cents
+            unit_amount: 250000, // $25.00
             quantity: 2,
             currency: "usd".to_string(),
             images: Some(vec!["https://example.com/widget.jpg".to_string()]),
             metadata: None,
-            tax_amount: Some(500), // $5.00 tax (10% VAT on $50)
+            tax_amount: Some(50000), // $5.00 tax (10% VAT on $50)
             tax_name: Some("10% VAT".to_string()),
         },
         LineItem {
             name: "Standard Gadget".to_string(),
             description: Some("An everyday gadget".to_string()),
-            unit_amount: 1000, // $10.00 in cents
+            unit_amount: 100000, // $10.00
             quantity: 1,
             currency: "usd".to_string(),
             images: None,
             metadata: None,
-            tax_amount: Some(100), // $1.00 tax (10% VAT on $10)
+            tax_amount: Some(10000), // $1.00 tax (10% VAT on $10)
             tax_name: Some("10% VAT".to_string()),
         },
     ];
