@@ -281,12 +281,7 @@ impl StripeApi {
             .post(
                 "/v1/payment_intents",
                 CreatePaymentIntentRequest {
-                    amount: match amount.currency() {
-                        c if c.is_crypto() => {
-                            bail!("{} amount not allowed for fiat payments", c)
-                        }
-                        _ => amount.value(),
-                    },
+                    amount: super::chargeable_minor_units(amount)?,
                     currency,
                     description,
                     automatic_payment_methods: Some(HashMap::from_iter([(

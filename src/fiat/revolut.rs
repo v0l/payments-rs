@@ -165,12 +165,7 @@ impl RevolutApi {
                 "/api/orders",
                 CreateOrderRequest {
                     currency: amount.currency().to_string(),
-                    amount: match amount.currency() {
-                        c if c.is_crypto() => {
-                            bail!("{} amount not allowed for fiat payments", c)
-                        }
-                        _ => amount.value(),
-                    },
+                    amount: super::chargeable_minor_units(amount)?,
                     description,
                     line_items: revolut_line_items,
                     customer,

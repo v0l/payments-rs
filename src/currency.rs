@@ -35,11 +35,25 @@ pub enum Currency {
     ETH,
     /// Tether (USDT) on the Tron network
     USDTTRC,
+    /// Euro counted in milli-cents
+    MEUR,
+    /// US Dollar counted in milli-cents
+    MUSD,
+    /// Pound Sterling counted in milli-cents
+    MGBP,
+    /// Canadian Dollar counted in milli-cents
+    MCAD,
+    /// Swiss Franc counted in milli-cents
+    MCHF,
+    /// Australian Dollar counted in milli-cents
+    MAUD,
+    /// Japanese Yen counted in milli-cents
+    MJPY,
 }
 
 impl Currency {
     /// Every supported currency.
-    pub const ALL: [Currency; 12] = [
+    pub const ALL: [Currency; 19] = [
         Currency::EUR,
         Currency::BTC,
         Currency::USD,
@@ -52,6 +66,13 @@ impl Currency {
         Currency::LTC,
         Currency::ETH,
         Currency::USDTTRC,
+        Currency::MEUR,
+        Currency::MUSD,
+        Currency::MGBP,
+        Currency::MCAD,
+        Currency::MCHF,
+        Currency::MAUD,
+        Currency::MJPY,
     ];
 
     /// True for cryptocurrencies, which are held in milli-units (1e-11 of a coin)
@@ -63,12 +84,56 @@ impl Currency {
         )
     }
 
-    /// Smallest units per standard unit: 1e11 for crypto, 100 for fiat.
+    /// True for a milli fiat currency: the same money as [`Self::base`], held in
+    /// milli-cents so a price can be a fraction of a cent. Payment services
+    /// never see one; convert to the base currency first.
+    pub fn is_milli(&self) -> bool {
+        self.base() != *self
+    }
+
+    /// The currency whose exchange rate this one uses: EUR for MEUR, itself
+    /// for every other currency.
+    pub fn base(&self) -> Currency {
+        match self {
+            Currency::MEUR => Currency::EUR,
+            Currency::MUSD => Currency::USD,
+            Currency::MGBP => Currency::GBP,
+            Currency::MCAD => Currency::CAD,
+            Currency::MCHF => Currency::CHF,
+            Currency::MAUD => Currency::AUD,
+            Currency::MJPY => Currency::JPY,
+            c => *c,
+        }
+    }
+
+    /// The milli currency of a fiat currency (MEUR for EUR, MEUR for MEUR),
+    /// `None` for crypto.
+    pub fn milli(&self) -> Option<Currency> {
+        match self.base() {
+            Currency::EUR => Some(Currency::MEUR),
+            Currency::USD => Some(Currency::MUSD),
+            Currency::GBP => Some(Currency::MGBP),
+            Currency::CAD => Some(Currency::MCAD),
+            Currency::CHF => Some(Currency::MCHF),
+            Currency::AUD => Some(Currency::MAUD),
+            Currency::JPY => Some(Currency::MJPY),
+            _ => None,
+        }
+    }
+
+    /// Smallest units per standard unit of [`Self::base`]: 1e11 for crypto,
+    /// 100 for fiat, 100,000 for milli fiat.
     ///
     /// Crypto shares one scale so every coin fits a `u64` (ETH has 18 decimals,
     /// which would overflow at about 18 ETH in native units).
     pub fn scale(&self) -> f64 {
-        if self.is_crypto() { 1.0e11 } else { 100.0 }
+        if self.is_crypto() {
+            1.0e11
+        } else if self.is_milli() {
+            100_000.0
+        } else {
+            100.0
+        }
     }
 }
 
@@ -87,6 +152,13 @@ impl Display for Currency {
             Currency::LTC => write!(f, "LTC"),
             Currency::ETH => write!(f, "ETH"),
             Currency::USDTTRC => write!(f, "USDTTRC"),
+            Currency::MEUR => write!(f, "MEUR"),
+            Currency::MUSD => write!(f, "MUSD"),
+            Currency::MGBP => write!(f, "MGBP"),
+            Currency::MCAD => write!(f, "MCAD"),
+            Currency::MCHF => write!(f, "MCHF"),
+            Currency::MAUD => write!(f, "MAUD"),
+            Currency::MJPY => write!(f, "MJPY"),
         }
     }
 }
@@ -120,6 +192,13 @@ impl FromStr for Currency {
             "ltc" => Ok(Currency::LTC),
             "eth" => Ok(Currency::ETH),
             "usdttrc" => Ok(Currency::USDTTRC),
+            "meur" => Ok(Currency::MEUR),
+            "musd" => Ok(Currency::MUSD),
+            "mgbp" => Ok(Currency::MGBP),
+            "mcad" => Ok(Currency::MCAD),
+            "mchf" => Ok(Currency::MCHF),
+            "maud" => Ok(Currency::MAUD),
+            "mjpy" => Ok(Currency::MJPY),
             _ => Err(ParseCurrencyError(s.to_string())),
         }
     }
@@ -161,8 +240,8 @@ impl CurrencyAmount {
     /// For fiat currencies, this expects the standard unit (e.g., 20.00 for $20).
     /// For cryptocurrencies, this expects the coin amount (e.g., 0.001 for 0.001 BTC).
     pub fn from_f32(currency: Currency, amount: f32) -> Self {
-        if currency.is_crypto() {
-            CurrencyAmount(currency, (amount as f64 * currency.scale()) as u64)
+        if currency.is_crypto() || currency.is_milli() {
+            CurrencyAmount(currency, (amount as f64 * currency.scale()).round() as u64)
         } else {
             CurrencyAmount(currency, (amount * 100.0) as u64)
         }
@@ -175,7 +254,7 @@ impl CurrencyAmount {
 
     /// Get the value as a floating-point number in the standard unit.
     pub fn value_f32(&self) -> f32 {
-        if self.0.is_crypto() {
+        if self.0.is_crypto() || self.0.is_milli() {
             (self.1 as f64 / self.0.scale()) as f32
         } else {
             self.1 as f32 / 100.0
@@ -185,6 +264,26 @@ impl CurrencyAmount {
     /// Get the currency type.
     pub fn currency(&self) -> Currency {
         self.0
+    }
+
+    /// This amount in [`Currency::base`], rounded up to the base currency's
+    /// smallest unit: MEUR 0.00001 becomes EUR 0.01.
+    pub fn to_base(&self) -> Self {
+        if self.0.is_milli() {
+            CurrencyAmount(self.0.base(), self.1.div_ceil(1000))
+        } else {
+            *self
+        }
+    }
+
+    /// This amount in [`Currency::milli`], exactly. `None` for crypto or on
+    /// overflow.
+    pub fn to_milli(&self) -> Option<Self> {
+        let milli = self.0.milli()?;
+        if self.0.is_milli() {
+            return Some(*self);
+        }
+        Some(CurrencyAmount(milli, self.1.checked_mul(1000)?))
     }
 }
 
@@ -205,6 +304,8 @@ impl Display for CurrencyAmount {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
         if self.0.is_crypto() {
             write!(f, "{} {:.8}", self.0, self.value_f32())
+        } else if self.0.is_milli() {
+            write!(f, "{} {:.5}", self.0, self.value_f32())
         } else {
             write!(f, "{} {:.2}", self.0, self.value_f32())
         }
@@ -370,8 +471,72 @@ mod tests {
             Currency::JPY,
         ] {
             assert!(!c.is_crypto(), "{c}");
+            assert!(!c.is_milli(), "{c}");
             assert_eq!(c.scale(), 100.0, "{c}");
         }
+    }
+
+    #[test]
+    fn test_milli_currency_maps_to_its_base() {
+        for (milli, base) in [
+            (Currency::MEUR, Currency::EUR),
+            (Currency::MUSD, Currency::USD),
+            (Currency::MGBP, Currency::GBP),
+            (Currency::MCAD, Currency::CAD),
+            (Currency::MCHF, Currency::CHF),
+            (Currency::MAUD, Currency::AUD),
+            (Currency::MJPY, Currency::JPY),
+        ] {
+            assert!(milli.is_milli(), "{milli}");
+            assert!(!milli.is_crypto(), "{milli}");
+            assert_eq!(milli.base(), base);
+            assert_eq!(base.milli(), Some(milli));
+            assert_eq!(milli.milli(), Some(milli));
+            assert_eq!(milli.scale(), 100_000.0, "{milli}");
+        }
+        for c in [Currency::BTC, Currency::XMR, Currency::USDTTRC] {
+            assert_eq!(c.base(), c);
+            assert_eq!(c.milli(), None);
+            assert!(!c.is_milli());
+        }
+    }
+
+    #[test]
+    fn test_milli_amount_to_base_rounds_up() {
+        let a = CurrencyAmount::from_u64(Currency::MEUR, 137);
+        assert_eq!(a.to_base(), CurrencyAmount::from_u64(Currency::EUR, 1));
+        let b = CurrencyAmount::from_u64(Currency::MEUR, 2000);
+        assert_eq!(b.to_base(), CurrencyAmount::from_u64(Currency::EUR, 2));
+        assert_eq!(
+            CurrencyAmount::from_u64(Currency::MEUR, 0).to_base(),
+            CurrencyAmount::from_u64(Currency::EUR, 0)
+        );
+        let btc = CurrencyAmount::millisats(5);
+        assert_eq!(btc.to_base(), btc);
+    }
+
+    #[test]
+    fn test_amount_to_milli() {
+        let a = CurrencyAmount::from_u64(Currency::USD, 250);
+        assert_eq!(
+            a.to_milli(),
+            Some(CurrencyAmount::from_u64(Currency::MUSD, 250_000))
+        );
+        let m = CurrencyAmount::from_u64(Currency::MUSD, 7);
+        assert_eq!(m.to_milli(), Some(m));
+        assert_eq!(CurrencyAmount::millisats(1).to_milli(), None);
+        assert_eq!(
+            CurrencyAmount::from_u64(Currency::EUR, u64::MAX).to_milli(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_milli_amount_f32_and_display() {
+        let a = CurrencyAmount::from_f32(Currency::MEUR, 0.00137);
+        assert_eq!(a.value(), 137);
+        assert!((a.value_f32() - 0.00137).abs() < 1e-7);
+        assert_eq!(a.to_string(), "MEUR 0.00137");
     }
 
     #[test]

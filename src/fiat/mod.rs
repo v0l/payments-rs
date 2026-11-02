@@ -198,9 +198,33 @@ pub struct SubscriptionPaymentInfo {
     pub raw_data: String,
 }
 
+/// The amount a card processor is asked to charge: the smallest-unit value of
+/// a plain fiat amount. Crypto and milli currencies are refused, since no
+/// processor can charge a fraction of a cent.
+pub fn chargeable_minor_units(amount: CurrencyAmount) -> Result<u64> {
+    let c = amount.currency();
+    if c.is_crypto() || c.is_milli() {
+        return Err(anyhow!("{} amount not allowed for fiat payments", c));
+    }
+    Ok(amount.value())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::currency::Currency;
+
+    #[test]
+    fn test_chargeable_minor_units_refuses_crypto_and_milli() {
+        assert_eq!(
+            chargeable_minor_units(CurrencyAmount::from_u64(Currency::EUR, 1234)).unwrap(),
+            1234
+        );
+        for c in [Currency::BTC, Currency::XMR, Currency::MEUR, Currency::MJPY] {
+            let err = chargeable_minor_units(CurrencyAmount::from_u64(c, 1234)).unwrap_err();
+            assert!(err.to_string().contains("not allowed"), "{c}");
+        }
+    }
 
     #[test]
     fn test_line_item_total_amount_without_tax() {
