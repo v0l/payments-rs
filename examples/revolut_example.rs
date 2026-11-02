@@ -37,23 +37,23 @@ async fn main() -> Result<()> {
         LineItem {
             name: "Premium Widget".to_string(),
             description: Some("A high-quality widget".to_string()),
-            unit_amount: 250000, // £25.00
+            unit_amount: 2500, // £25.00 in pence
             quantity: 2,
             currency: "gbp".to_string(),
             images: Some(vec!["https://example.com/widget.jpg".to_string()]),
             metadata: None,
-            tax_amount: Some(100000), // £10.00 VAT (20% on £50)
+            tax_amount: Some(1000), // £10.00 VAT (20% on £50)
             tax_name: Some("20% VAT".to_string()),
         },
         LineItem {
             name: "Standard Gadget".to_string(),
             description: Some("An everyday gadget".to_string()),
-            unit_amount: 100000, // £10.00
+            unit_amount: 1000, // £10.00 in pence
             quantity: 1,
             currency: "gbp".to_string(),
             images: None,
             metadata: None,
-            tax_amount: Some(20000), // £2.00 VAT (20% on £10)
+            tax_amount: Some(200), // £2.00 VAT (20% on £10)
             tax_name: Some("20% VAT".to_string()),
         },
     ];

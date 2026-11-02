@@ -1,7 +1,5 @@
 use crate::currency::CurrencyAmount;
-use crate::fiat::{
-    FiatPaymentInfo, FiatPaymentService, LineItem, SubscriptionPaymentInfo, units_to_cents,
-};
+use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem, SubscriptionPaymentInfo};
 use crate::json_api::{JsonApi, TokenGen};
 use crate::webhook::{WebhookMessage, verify_timestamp_within};
 use anyhow::{Context, Result, anyhow, bail};
@@ -124,16 +122,60 @@ impl RevolutApi {
         customer: Option<RevolutCustomer>,
         save_payment_method_for: Option<String>,
     ) -> Result<RevolutOrder> {
+        // Convert generic LineItems to Revolut's format
+        let revolut_line_items = line_items.map(|items| {
+            items
+                .into_iter()
+                .map(|item| {
+                    let total = item.total_amount();
+
+                    // Build taxes array if tax info is provided
+                    let taxes =
+                        if let (Some(tax_amt), Some(tax_name)) = (item.tax_amount, item.tax_name) {
+                            Some(vec![RevolutTax {
+                                name: tax_name,
+                                amount: tax_amt,
+                            }])
+                        } else {
+                            None
+                        };
+
+                    RevolutLineItem {
+                        name: item.name,
+                        description: item.description,
+                        item_type: None, // Could be enhanced to detect from metadata
+                        quantity: RevolutQuantity {
+                            value: item.quantity,
+                            unit: None, // Could be enhanced to extract from metadata
+                        },
+                        unit_price_amount: item.unit_amount,
+                        total_amount: total,
+                        external_id: None,
+                        discounts: None,
+                        taxes,
+                        image_urls: item.images,
+                        url: None,
+                    }
+                })
+                .collect()
+        });
+
         self.api
             .post(
                 "/api/orders",
-                CreateOrderRequest::new(
-                    amount,
+                CreateOrderRequest {
+                    currency: amount.currency().to_string(),
+                    amount: match amount.currency() {
+                        c if c.is_crypto() => {
+                            bail!("{} amount not allowed for fiat payments", c)
+                        }
+                        _ => amount.value(),
+                    },
                     description,
-                    line_items,
+                    line_items: revolut_line_items,
                     customer,
                     save_payment_method_for,
-                )?,
+                },
             )
             .await
     }
@@ -358,58 +400,6 @@ pub struct CreateOrderRequest {
     /// this order for future off-session charges.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub save_payment_method_for: Option<String>,
-}
-
-impl CreateOrderRequest {
-    pub fn new(
-        amount: CurrencyAmount,
-        description: Option<String>,
-        line_items: Option<Vec<LineItem>>,
-        customer: Option<RevolutCustomer>,
-        save_payment_method_for: Option<String>,
-    ) -> Result<Self> {
-        let line_items = line_items.map(|items| {
-            items
-                .into_iter()
-                .map(|item| {
-                    let total = item.total_cents();
-                    let taxes =
-                        if let (Some(tax_amt), Some(tax_name)) = (item.tax_amount, item.tax_name) {
-                            Some(vec![RevolutTax {
-                                name: tax_name,
-                                amount: units_to_cents(tax_amt),
-                            }])
-                        } else {
-                            None
-                        };
-                    RevolutLineItem {
-                        name: item.name,
-                        description: item.description,
-                        item_type: None,
-                        quantity: RevolutQuantity {
-                            value: item.quantity,
-                            unit: None,
-                        },
-                        unit_price_amount: units_to_cents(item.unit_amount),
-                        total_amount: total,
-                        external_id: None,
-                        discounts: None,
-                        taxes,
-                        image_urls: item.images,
-                        url: None,
-                    }
-                })
-                .collect()
-        });
-        Ok(Self {
-            currency: amount.currency().to_string(),
-            amount: amount.to_cents()?,
-            description,
-            line_items,
-            customer,
-            save_payment_method_for,
-        })
-    }
 }
 
 /// A customer to create or attach to an order.
@@ -1285,41 +1275,6 @@ mod tests {
         assert_eq!(
             RevolutSavedPaymentMethodType::RevolutPay.as_str(),
             "revolut_pay"
-        );
-    }
-
-    #[test]
-    fn test_create_order_request_sends_cents() {
-        let req = CreateOrderRequest::new(
-            CurrencyAmount::from_u64(crate::currency::Currency::EUR, 246_101),
-            None,
-            Some(vec![LineItem {
-                name: "VM".to_string(),
-                description: None,
-                unit_amount: 100_050,
-                quantity: 2,
-                currency: "EUR".to_string(),
-                images: None,
-                metadata: None,
-                tax_amount: Some(46_000),
-                tax_name: Some("VAT".to_string()),
-            }]),
-            None,
-            None,
-        )
-        .unwrap();
-        assert_eq!(req.amount, 2462, "1/100 cent rounded up to the cent");
-        let line = &req.line_items.unwrap()[0];
-        assert_eq!(line.unit_price_amount, 1001);
-        assert_eq!(line.total_amount, 1001 * 2 + 460);
-        assert_eq!(line.taxes.as_ref().unwrap()[0].amount, 460);
-    }
-
-    #[test]
-    fn test_create_order_request_refuses_crypto() {
-        assert!(
-            CreateOrderRequest::new(CurrencyAmount::millisats(1000), None, None, None, None)
-                .is_err()
         );
     }
 

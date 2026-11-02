@@ -1,6 +1,6 @@
 use crate::USER_AGENT;
 use crate::currency::CurrencyAmount;
-use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem, units_to_cents};
+use crate::fiat::{FiatPaymentInfo, FiatPaymentService, LineItem};
 use crate::webhook::{WebhookMessage, verify_timestamp_within};
 use anyhow::{Context, Result, anyhow, bail};
 use hmac::{Hmac, Mac};
@@ -275,10 +275,31 @@ impl StripeApi {
         amount: CurrencyAmount,
         description: Option<String>,
     ) -> Result<StripePaymentIntent> {
+        let currency = amount.currency().to_string().to_lowercase();
+
         self.api
             .post(
                 "/v1/payment_intents",
-                CreatePaymentIntentRequest::new(amount, description)?,
+                CreatePaymentIntentRequest {
+                    amount: match amount.currency() {
+                        c if c.is_crypto() => {
+                            bail!("{} amount not allowed for fiat payments", c)
+                        }
+                        _ => amount.value(),
+                    },
+                    currency,
+                    description,
+                    automatic_payment_methods: Some(HashMap::from_iter([(
+                        "enabled".to_string(),
+                        "true".to_string(),
+                    )])),
+                    // Create the intent unconfirmed: it starts in
+                    // `requires_payment_method` and returns a `client_secret`
+                    // for the client to attach a payment method and confirm.
+                    // Confirming server-side here (with no payment method
+                    // attached) would be rejected by Stripe.
+                    confirm: None,
+                },
             )
             .await
     }
@@ -313,8 +334,49 @@ impl FiatPaymentService for StripeApi {
         Box::pin(async move {
             // If line items are provided, use Checkout Sessions
             if let Some(items) = line_items {
-                let checkout_items: Vec<CheckoutLineItem> =
-                    items.into_iter().map(CheckoutLineItem::from).collect();
+                let checkout_items: Vec<CheckoutLineItem> = items
+                    .into_iter()
+                    .map(|item| {
+                        // Build product metadata with tax info if present
+                        let mut metadata_map = serde_json::Map::new();
+                        if let Some(tax_amt) = item.tax_amount {
+                            metadata_map
+                                .insert("tax_amount".to_string(), serde_json::json!(tax_amt));
+                        }
+                        if let Some(tax_name) = &item.tax_name {
+                            metadata_map
+                                .insert("tax_name".to_string(), serde_json::json!(tax_name));
+                        }
+                        // Merge with existing metadata if any
+                        if let Some(serde_json::Value::Object(existing)) = item.metadata {
+                            metadata_map.extend(existing);
+                        }
+
+                        let metadata = if metadata_map.is_empty() {
+                            None
+                        } else {
+                            Some(serde_json::Value::Object(metadata_map))
+                        };
+
+                        CheckoutLineItem {
+                            price: None,
+                            price_data: Some(PriceData {
+                                currency: item.currency.to_lowercase(),
+                                unit_amount: item.unit_amount,
+                                product_data: ProductData {
+                                    name: item.name,
+                                    description: item.description,
+                                    images: item.images,
+                                    metadata,
+                                },
+                                recurring: None,
+                                tax_behavior: Some("exclusive".to_string()), // Tax is added on top
+                            }),
+                            quantity: item.quantity,
+                            tax_rates: None, // Could be enhanced to use Stripe tax rates
+                        }
+                    })
+                    .collect();
 
                 let request = CreateCheckoutSessionRequest {
                     line_items: checkout_items,
@@ -529,70 +591,6 @@ pub struct CreatePaymentIntentRequest {
     pub confirm: Option<bool>,
 }
 
-impl CreatePaymentIntentRequest {
-    pub fn new(amount: CurrencyAmount, description: Option<String>) -> Result<Self> {
-        Ok(Self {
-            amount: amount.to_cents()?,
-            currency: amount.currency().to_string().to_lowercase(),
-            description,
-            automatic_payment_methods: Some(HashMap::from_iter([(
-                "enabled".to_string(),
-                "true".to_string(),
-            )])),
-            // Create the intent unconfirmed: it starts in
-            // `requires_payment_method` and returns a `client_secret`
-            // for the client to attach a payment method and confirm.
-            // Confirming server-side here (with no payment method
-            // attached) would be rejected by Stripe.
-            confirm: None,
-        })
-    }
-}
-
-impl From<LineItem> for CheckoutLineItem {
-    fn from(item: LineItem) -> Self {
-        // Build product metadata with tax info if present
-        let mut metadata_map = serde_json::Map::new();
-        if let Some(tax_amt) = item.tax_amount {
-            metadata_map.insert(
-                "tax_amount".to_string(),
-                serde_json::json!(units_to_cents(tax_amt)),
-            );
-        }
-        if let Some(tax_name) = &item.tax_name {
-            metadata_map.insert("tax_name".to_string(), serde_json::json!(tax_name));
-        }
-        // Merge with existing metadata if any
-        if let Some(serde_json::Value::Object(existing)) = item.metadata {
-            metadata_map.extend(existing);
-        }
-
-        let metadata = if metadata_map.is_empty() {
-            None
-        } else {
-            Some(serde_json::Value::Object(metadata_map))
-        };
-
-        CheckoutLineItem {
-            price: None,
-            price_data: Some(PriceData {
-                currency: item.currency.to_lowercase(),
-                unit_amount: units_to_cents(item.unit_amount),
-                product_data: ProductData {
-                    name: item.name,
-                    description: item.description,
-                    images: item.images,
-                    metadata,
-                },
-                recurring: None,
-                tax_behavior: Some("exclusive".to_string()), // Tax is added on top
-            }),
-            quantity: item.quantity,
-            tax_rates: None, // Could be enhanced to use Stripe tax rates
-        }
-    }
-}
-
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct StripePaymentIntent {
     pub id: String,
@@ -736,37 +734,6 @@ mod tests {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs() as i64
-    }
-
-    #[test]
-    fn test_payment_intent_sends_cents() {
-        let req = CreatePaymentIntentRequest::new(
-            CurrencyAmount::from_u64(crate::currency::Currency::EUR, 109_901),
-            None,
-        )
-        .unwrap();
-        assert_eq!(req.amount, 1100);
-        assert_eq!(req.currency, "eur");
-        assert!(CreatePaymentIntentRequest::new(CurrencyAmount::millisats(1), None).is_err());
-    }
-
-    #[test]
-    fn test_checkout_line_item_sends_cents() {
-        let line = CheckoutLineItem::from(LineItem {
-            name: "VM".to_string(),
-            description: None,
-            unit_amount: 100_050,
-            quantity: 2,
-            currency: "EUR".to_string(),
-            images: None,
-            metadata: None,
-            tax_amount: Some(46_000),
-            tax_name: Some("VAT".to_string()),
-        });
-        let price = line.price_data.unwrap();
-        assert_eq!(price.unit_amount, 1001);
-        assert_eq!(price.product_data.metadata.unwrap()["tax_amount"], 460);
-        assert_eq!(line.quantity, 2);
     }
 
     #[test]
